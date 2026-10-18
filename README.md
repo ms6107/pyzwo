@@ -22,8 +22,8 @@ Key lifecycle and hardware behaviors in the synchronous EFW controller (`FilterW
 - **Explicit discovery & zero-based slots:** `open()` validates `0 <= device_index < get_num()` before querying `EFWGetID(device_index)`. Slot positions follow the ZWO SDK's zero-based convention (`0 .. slot_num - 1`), with `-1` indicating the wheel is currently in motion (`EFW_ERROR_MOVING`).
 - **Non-destructive `open()` with exception-safe rollback:** Opening a wheel only reads its current properties (`EFWGetProperty`, `EFWGetDirection`, `EFWGetFirmwareVersion`) unless `unidirectional` is explicitly passed to `FilterWheel(...)`. If any initialization step fails after `EFWOpen(id)` succeeds, `open()` automatically calls `EFWClose(id)` before re-raising; if rollback `EFWClose(id)` also fails, both errors are reported and the controller enters `DeviceState.UNKNOWN`.
 - **Hardware quirk guards:**
-  - Commanding `EFWSetPosition` to the slot the wheel is already on returns `EFW_ERROR_GENERAL_ERROR (rc=7)` on real hardware; `move_to_slot()` checks the current slot first and returns `(slot, 0)` without issuing a redundant move.
-  - Immediately after `EFWOpen`, some wheels transiently report `EFW_ERROR_MOVING` or `slot_num == 0` while completing power-on initialization; `open()` polls with a monotonic deadline until `slot_num > 0`.
+  - Commanding `EFWSetPosition` to the slot the wheel is already on returns `EFW_ERROR_GENERAL_ERROR (rc=7)` on real hardware; `move_to_slot()` checks the current slot first and returns `(slot, 0)` without issuing a redundant move (or rejects with `EFW_ERROR_MOVING` if the wheel is already moving).
+  - Immediately after `EFWOpen`, some wheels transiently report `EFW_ERROR_MOVING` or `slot_num == 0` while completing power-on initialization; `open()` polls with a monotonic deadline until `slot_num > 0` and the wheel settles at a valid slot (`0 <= pos < slot_num`).
   - On Linux, `libEFWFilter.so` references `udev_*` symbols without always declaring `DT_NEEDED` for `libudev.so.1`; `load_zwo_library()` preloads `libudev.so.1` with `RTLD_GLOBAL`.
 
 ## Concurrency, Deadlines & Limitations
@@ -104,7 +104,7 @@ uvx ruff format --check .
 
 When `libEFWFilter.so.1.7.0`, `70-pyzwo.rules`, and a physical ZWO EFW are installed locally:
 
-- **Read-only hardware test (`test_hardware_readonly_open_and_query`)** opens the wheel without writing settings, verifies `slot_num > 0`, and checks that `get_slot()` returns `-1` (moving) or `0 <= slot < slot_num`:
+- **Read-only hardware test (`test_hardware_readonly_open_and_query`)** opens the wheel without writing settings, verifies `slot_num > 0`, and checks that `get_slot()` returns a settled slot `0 <= slot < slot_num`:
   ```bash
   sg zwo -c "python3 -m unittest discover -s tests -v"
   ```

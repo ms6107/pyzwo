@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import time
 import unittest
 from unittest.mock import patch
 
@@ -280,7 +279,7 @@ class TestEfwClientUnit(unittest.TestCase):
         self.assertEqual(fake_open_fail.close_calls, 0)
 
         # 2. If any post-open initialization step fails, rollback calls close() once
-        steps = ["set_direction", "get_direction", "get_property", "get_firmware_version"]
+        steps = ["set_direction", "get_direction", "get_property", "get_position", "get_firmware_version"]
         for step in steps:
             fake = FakeEfwSDK()
             fake.strict_close = True
@@ -399,17 +398,21 @@ class TestEfwClientUnit(unittest.TestCase):
         wheel.close()
 
     def test_open_discovery_deadline_terminates_on_zero_slots_or_repeating_moving(self) -> None:
-        # 1. Transient slot_num=0 and EFW_ERROR_MOVING before readiness succeeds within deadline
+        # 1. Transient slot_num=0, EFW_ERROR_MOVING, and -1 position before settling succeeds within deadline
         fake_transient = FakeEfwSDK(slot_num=7)
         fake_transient.property_sequence = [
             (0, "EFW", 0),
             ZwoError("EFWGetProperty(0)", EFWErrorCode.EFW_ERROR_MOVING, "EFW_ERROR_MOVING"),
             (0, "EFW", 7),
+            (0, "EFW", 7),
+            (0, "EFW", 7),
         ]
+        fake_transient.position_sequence = [-1, -1, 3]
         wheel_transient = EFW(sdk=fake_transient)  # type: ignore[arg-type]
         info = wheel_transient.open(timeout=0.5, poll_interval=0.002)
         self.assertEqual(info.slot_num, 7)
         self.assertEqual(wheel_transient.state, DeviceState.READY)
+        self.assertEqual(fake_transient.position_sequence, [])
         wheel_transient.close()
 
         # 2. Infinite slot_num=0 responses must time out and roll back close()
@@ -437,6 +440,28 @@ class TestEfwClientUnit(unittest.TestCase):
         self.assertFalse(fake_moving.opened)
         self.assertEqual(wheel_moving.state, DeviceState.DISCONNECTED)
 
+        # 4. Infinite -1 moving position after slot_num > 0 must time out and roll back close()
+        fake_pos_moving = FakeEfwSDK(slot_num=7)
+        fake_pos_moving.stuck_moving = True
+        wheel_pos_moving = EFW(sdk=fake_pos_moving)  # type: ignore[arg-type]
+        with self.assertRaises(ZwoTimeoutError):
+            wheel_pos_moving.open(timeout=0.01, poll_interval=0.002)
+        self.assertEqual(fake_pos_moving.open_calls, 1)
+        self.assertEqual(fake_pos_moving.close_calls, 1)
+        self.assertFalse(fake_pos_moving.opened)
+        self.assertEqual(wheel_pos_moving.state, DeviceState.DISCONNECTED)
+
+        # 5. Out-of-range settled slot reported during open() must raise EFW_ERROR_ERROR_STATE and roll back close()
+        fake_bad_pos = FakeEfwSDK(slot_num=7, initial_slot=9)
+        wheel_bad_pos = EFW(sdk=fake_bad_pos)  # type: ignore[arg-type]
+        with self.assertRaises(ZwoError) as bad_pos_ctx:
+            wheel_bad_pos.open(timeout=0.05, poll_interval=0.002)
+        self.assertEqual(bad_pos_ctx.exception.code, EFWErrorCode.EFW_ERROR_ERROR_STATE)
+        self.assertEqual(fake_bad_pos.open_calls, 1)
+        self.assertEqual(fake_bad_pos.close_calls, 1)
+        self.assertFalse(fake_bad_pos.opened)
+        self.assertEqual(wheel_bad_pos.state, DeviceState.DISCONNECTED)
+
     def test_slot_bounds_wrong_settled_slot_and_permanent_moving_timeout(self) -> None:
         fake = FakeEfwSDK(slot_num=7, initial_slot=2)
         with EFW(sdk=fake) as wheel:  # type: ignore[arg-type]
@@ -462,6 +487,17 @@ class TestEfwClientUnit(unittest.TestCase):
             fake.position_sequence = [-1, 2]
             self.assertEqual(wheel.get_slot(), -1)
             self.assertEqual(wheel.get_slot(), 2)
+
+            # If initial get_position() inside move_to_slot() returns -1 (already moving),
+            # reject with EFW_ERROR_MOVING without issuing set_position() and mark FAULT
+            fake.position_sequence = [-1]
+            with self.assertRaises(ZwoError) as already_moving_ctx:
+                wheel.move_to_slot(4, poll_interval=0.001, timeout=0.05)
+            self.assertEqual(already_moving_ctx.exception.code, EFWErrorCode.EFW_ERROR_MOVING)
+            self.assertEqual(fake.moves, [])
+            self.assertEqual(wheel.state, DeviceState.FAULT)
+            wheel.reconcile()
+            self.assertEqual(wheel.state, DeviceState.READY)
 
             # Wrong settled slot after moving raises EFW_ERROR_ERROR_STATE and marks FAULT
             fake.settle_at_wrong_slot = 5
@@ -603,7 +639,7 @@ class TestEfwHardware(unittest.TestCase):
             self.assertGreater(wheel.info.slot_num, 0)
             slot = wheel.get_slot()
             self.assertTrue(
-                slot == -1 or 0 <= slot < wheel.info.slot_num,
+                0 <= slot < wheel.info.slot_num,
                 f"Unexpected slot={slot} for slot_num={wheel.info.slot_num}",
             )
 
@@ -617,13 +653,7 @@ class TestEfwHardware(unittest.TestCase):
             assert wheel.info is not None
             slot_num = wheel.info.slot_num
             self.assertGreater(slot_num, 1)
-            deadline = time.monotonic() + 30.0
             start_slot = wheel.get_slot()
-            while start_slot == -1:
-                if time.monotonic() >= deadline:
-                    self.fail("Physical EFW did not settle from initial moving state (-1) within 30s")
-                time.sleep(0.05)
-                start_slot = wheel.get_slot()
             self.assertTrue(0 <= start_slot < slot_num)
             target_slot = (start_slot + 1) % slot_num
 

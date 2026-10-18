@@ -274,8 +274,20 @@ class FilterWheel:
                 try:
                     _, dev_name, slot_num = self.sdk.get_property(efw_id)
                     if slot_num > 0:
-                        break
-                    if time.monotonic() >= deadline:
+                        pos = self.sdk.get_position(efw_id)
+                        if pos != -1:
+                            if pos < 0 or pos >= slot_num:
+                                raise ZwoError(
+                                    f"EFWGetPosition({efw_id}) reported invalid slot {pos} during open",
+                                    EFWErrorCode.EFW_ERROR_ERROR_STATE,
+                                    "EFW_ERROR_ERROR_STATE",
+                                )
+                            break
+                        if time.monotonic() >= deadline:
+                            raise ZwoTimeoutError(
+                                f"EFWGetPosition({efw_id}) timed out after {timeout:.2f}s while wheel moving (-1)"
+                            )
+                    elif time.monotonic() >= deadline:
                         raise ZwoTimeoutError(
                             f"EFWGetProperty({efw_id}) timed out after {timeout:.2f}s with slot_num={slot_num}"
                         )
@@ -450,6 +462,18 @@ class FilterWheel:
         self.state = DeviceState.BUSY
         try:
             cur = self.sdk.get_position(efw_id)
+            if cur == -1:
+                raise ZwoError(
+                    f"EFWGetPosition({efw_id}) reported wheel is already moving (-1)",
+                    EFWErrorCode.EFW_ERROR_MOVING,
+                    "EFW_ERROR_MOVING",
+                )
+            if cur < 0 or (slot_num > 0 and cur >= slot_num):
+                raise ZwoError(
+                    f"EFWGetPosition({efw_id}) reported invalid slot {cur}",
+                    EFWErrorCode.EFW_ERROR_ERROR_STATE,
+                    "EFW_ERROR_ERROR_STATE",
+                )
             if cur == slot:
                 self.state = DeviceState.READY
                 return (slot, 0)
