@@ -5,7 +5,7 @@ description = "Zero-dependency, pure-Python ctypes interface to official ZWO ast
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MPL-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "pyzwo/include/LICENSE.zwo"]
 authors = [{ name = "Maksim Semenov", email = "ms6107@gmail.com" }]
 dependencies = []
 
