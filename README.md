@@ -2,11 +2,13 @@
 
 `pyzwo` is an independent, pure-Python interface to the official ZWO SDKs (currently `libEFWFilter`, with additional ZWO device classes planned incrementally). It provides framework-agnostic device access, lifecycle management, and error reporting. Integrations with observatory-control frameworks are maintained separately.
 
+> **Status:** Experimental synchronous ZWO EFW (Electronic Filter Wheel) baseline.
+
 ## Philosophy
 
 I'm building `pyzwo` primarily for my own observatory, and I test it extensively against the hardware I actually own. At the same time, it is deliberately written **without hardcoded assumptions** tied to my specific rig—no baked-in slot counts or silent NVRAM overwrites on connect.
 
-Every implemented module uses ZWO's official USB SDK for that device family rather than model-specific constants.
+Every implemented module uses ZWO's official USB SDK for that device family rather than model-specific constants. Where the lists below mention specific models or architectures, that reflects what has been verified on physical hardware so far versus what shares the same USB SDK calls and remains untested on hardware.
 
 It started for my own setup, but it's MPL-2.0-licensed and free to grab for mainstream use.
 
@@ -16,15 +18,34 @@ ZWO distributes precompiled C shared libraries (`.so` / `.dylib` / `.dll`) and f
 
 To check `ctypes` signatures against the bundled ZWO `.h` header without requiring proprietary vendor binaries to be installed, `tests/header_checker.py` parses the C function prototypes for the bound USB API (`pyzwo/include/EFW_filter.h`) and verifies their `argtypes` and `restype` against a fake `CDLL` surface alongside unit checks for `_EFWInfo` struct layout and `EFWErrorCode` names. Unbound C functions and header-parsed enum integer values are not compared automatically.
 
-On Linux, `libEFWFilter.so` references `udev_*` symbols without always declaring `DT_NEEDED` for `libudev.so.1`; `load_zwo_library()` preloads `libudev.so.1` with `RTLD_GLOBAL`.
+Key lifecycle and hardware behaviors in the synchronous EFW controller (`FilterWheel` / `EFW`):
+- **Explicit discovery & zero-based slots:** `open()` validates `0 <= device_index < get_num()` before querying `EFWGetID(device_index)`. Slot positions follow the ZWO SDK's zero-based convention (`0 .. slot_num - 1`), with `-1` indicating the wheel is currently in motion (`EFW_ERROR_MOVING`).
+- **Non-destructive `open()` with exception-safe rollback:** Opening a wheel only reads its current properties (`EFWGetProperty`, `EFWGetDirection`, `EFWGetFirmwareVersion`) unless `unidirectional` is explicitly passed to `FilterWheel(...)`. If any initialization step fails after `EFWOpen(id)` succeeds, `open()` automatically calls `EFWClose(id)` before re-raising; if rollback `EFWClose(id)` also fails, both errors are reported and the controller enters `DeviceState.UNKNOWN`.
+- **Hardware quirk guards:**
+  - Commanding `EFWSetPosition` to the slot the wheel is already on returns `EFW_ERROR_GENERAL_ERROR (rc=7)` on real hardware; `move_to_slot()` checks the current slot first and returns `(slot, 0)` without issuing a redundant move.
+  - Immediately after `EFWOpen`, some wheels transiently report `EFW_ERROR_MOVING` or `slot_num == 0` while completing power-on initialization; `open()` polls with a monotonic deadline until `slot_num > 0`.
+  - On Linux, `libEFWFilter.so` references `udev_*` symbols without always declaring `DT_NEEDED` for `libudev.so.1`; `load_zwo_library()` preloads `libudev.so.1` with `RTLD_GLOBAL`.
+
+## Concurrency, Deadlines & Limitations
+
+- **Single-owner, single-thread contract:** `FilterWheel` (`EFW`) and `ZwoEfwSDK` are synchronous and designed for a single owner on a single thread. This baseline makes **no promise of thread safety** across concurrent threads and does **not** support simultaneous raw (`ZwoEfwSDK`) and managed (`FilterWheel`) access to the same device or vendor library. Do not rely on the Python GIL to make concurrent native C calls safe. Separate OS processes accessing the same USB device cannot be coordinated in-process.
+- **Polling deadlines vs. native C calls:** The `timeout` argument on `open()`, `move_to_slot()`, and `calibrate()` is a **Python-level monotonic polling deadline** checked between SDK calls. A synchronous native C call inside `libEFWFilter` has **no pre-emptive timeout**—if the vendor C function blocks in the kernel or USB stack, the calling Python thread will remain blocked until that C call returns.
+- **Honest fault & recovery states (`DeviceState`):** ZWO's `libEFWFilter` SDK does not provide a physical stop command. If `move_to_slot()` or `calibrate()` exceeds its polling deadline, settles on the wrong slot, or encounters an SDK error (such as `EFW_ERROR_REMOVED` on USB disconnect), `FilterWheel.state` transitions to `DeviceState.FAULT` and subsequent motion/query commands fail fast. The controller only returns to `DeviceState.READY` after `reconcile()` (or `close()` + `open()`) re-queries the hardware and confirms `slot_num > 0` and a settled position `0 <= pos < slot_num`. If `close()` itself fails, the handle remains retained and `state` transitions to `DeviceState.UNKNOWN` so `close()` can be retried.
+
+## Device classes & roadmap
+
+- **EFW (Filter Wheels, SDK `v1.7.0` / `libEFWFilter.so.1.7.0`)** — **Implemented (synchronous baseline; 12 of 16 C functions bound: `EFWGetSDKVersion`, `EFWGetNum`, `EFWGetID`, `EFWOpen`, `EFWClose`, `EFWGetProperty`, `EFWGetPosition`, `EFWSetPosition`, `EFWGetDirection`, `EFWSetDirection`, `EFWCalibrate`, `EFWGetFirmwareVersion`; `EFWGetProductIDs`, `EFWGetHWErrorCode`, `EFWGetSerialNumber`, and `EFWSetID` not yet bound).**
+  - [x] **ZWO EFW 7×2" II (USB Type-C revision, fw `3.5.2`, `03c3:1f01`)** — Verified on hardware (read-only + `test_hardware_move_next_slot_and_back`, pyzwo 0.1.0, SDK 1.7.0, openSUSE Tumbleweed x86_64).
+  - [ ] **ZWO EFW 7×2" (legacy USB Type-B)** and other slot variants (`5×2"`, `7×36mm`, `8×1.25"`, `Mini`) — Untested on hardware (uses the same `libEFWFilter` SDK calls and dynamic `slotNum` discovery).
+- **Asynchronous EFW execution** — **Planned next (Phase 2).**
+- **EAF (Focusers, SDK `v1.7.7` / `libEAFFocuser.so.1.7.7`)** — **Planned next (Phases 3–4).**
+- **ASI Cameras (`libASICamera2`) & AM Mounts** — **Planned.**
 
 ## ZWO SDK versions used
 
 | Device Class | Bundled Header | Shared Library | `GetSDKVersion()` |
 |---|---|---|---|
 | **EFW** | `pyzwo/include/EFW_filter.h` | `libEFWFilter.so.1.7.0` | `"1, 7"` (`1.7.0`) |
-
-`ZwoEfwSDK` binds 12 of the 16 C functions declared in `EFW_filter.h` (`EFWGetSDKVersion`, `EFWGetNum`, `EFWGetID`, `EFWOpen`, `EFWClose`, `EFWGetProperty`, `EFWGetPosition`, `EFWSetPosition`, `EFWGetDirection`, `EFWSetDirection`, `EFWCalibrate`, `EFWGetFirmwareVersion`; `EFWGetProductIDs`, `EFWGetHWErrorCode`, `EFWGetSerialNumber`, and `EFWSetID` are not yet bound).
 
 ## Platform & architecture status
 
@@ -55,13 +76,42 @@ sudo udevadm trigger --subsystem-match=hidraw
 
 After adding a user to the `zwo` group, log out and log back in (or restart the systemd service with `SupplementaryGroups=zwo`) so the new group membership takes effect, or replug the USB device if `udevadm trigger` was not run.
 
+## Usage
+
+```python
+from pyzwo import EFW
+
+with EFW(device_index=0) as wheel:
+    print(wheel.info)          # EfwInfo(id=0, name='EFW', slot_num=7, firmware_version='3.5.2', unidirectional=False)
+    print(wheel.get_slot())    # 0-based SDK slot (0 .. slot_num - 1), or -1 if moving
+    settled_slot, polls = wheel.move_to_slot(2, poll_interval=0.05, timeout=30.0)
+    print(f"Settled at slot {settled_slot} after {polls} moving polls")
+```
+
 ## Running tests
+
+### Default unit & C-header suite (no vendor binaries or hardware required)
 
 The default test suite uses in-memory fakes and `FakeCDLL` and runs in CI without `libEFWFilter.so` installed. Pointing `PYZWO_EFWFILTER_LIB` at a non-existent path guarantees that hardware tests are skipped even on a machine where the vendor library and a wheel are present:
 
 ```bash
 PYZWO_EFWFILTER_LIB=/nonexistent/libEFWFilter.so python3 -m unittest discover -s tests -v
 ```
+
+### Real-hardware tests (read-only vs. opt-in motion)
+
+When `libEFWFilter.so.1.7.0`, `70-pyzwo.rules`, and a physical ZWO EFW are installed locally:
+
+- **Read-only hardware test (`test_hardware_readonly_open_and_query`)** opens the wheel without writing settings, verifies `slot_num > 0`, and checks that `get_slot()` returns `-1` (moving) or `0 <= slot < slot_num`:
+  ```bash
+  sg zwo -c "python3 -m unittest discover -s tests -v"
+  ```
+- **Opt-in operational motion test (`test_hardware_move_next_slot_and_back`)** physically moves the wheel to `(slot + 1) % slot_num` and back to its starting slot, and requires explicit confirmation via `PYZWO_RUN_HARDWARE_MOTION_TESTS=1`:
+  ```bash
+  sg zwo -c "PYZWO_RUN_HARDWARE_MOTION_TESTS=1 python3 -m unittest discover -s tests -v"
+  ```
+
+> **Warning:** Hardware tests do **not** run in CI. Never run motion, calibration, or USB unbind/rebind recovery tests on equipment mounted on an active telescope or during live observations.
 
 ## License
 

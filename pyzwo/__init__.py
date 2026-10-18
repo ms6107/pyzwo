@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 from ._loader import DeviceState, ZwoError, ZwoTimeoutError, load_zwo_library
-from .efw import EFWErrorCode, EfwInfo, ZwoEfwSDK
+from .efw import EFW, EFWErrorCode, EfwInfo, FilterWheel, ZwoEfwSDK
 
 __all__ = [
     "DeviceState",
+    "EFW",
     "EFWErrorCode",
     "EfwInfo",
+    "FilterWheel",
     "ZwoEfwSDK",
     "ZwoError",
     "ZwoTimeoutError",
