@@ -117,7 +117,9 @@ When `libEFWFilter.so.1.7.0`, `70-pyzwo.rules`, and a physical ZWO EFW are insta
 
 ## License
 
-`pyzwo` is licensed under the Mozilla Public License 2.0 (MPL-2.0). See [LICENSE](LICENSE).
+`pyzwo` is an experimental interface to ZWO hardware. Users are encouraged to validate its behaviour with their specific equipment before relying on it for unattended operation.
+Applications integrating `pyzwo` should provide appropriate safeguards, error recovery, and supervision for their intended use.
+The project is distributed under MPL-2.0. See [LICENSE](LICENSE) for warranty and liability terms.
 
 The bundled ZWO SDK headers remain copyright of ZWO Company and are distributed under their respective license, reproduced in [`pyzwo/include/LICENSE.zwo`](pyzwo/include/LICENSE.zwo).
 
