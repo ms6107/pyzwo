@@ -1,0 +1,30 @@
+[project]
+name = "pyzwo"
+version = "0.1.0"
+description = "Zero-dependency, pure-Python ctypes interface to official ZWO astronomy SDKs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Maksim Semenov", email = "ms6107@gmail.com" }]
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.0",
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyzwo"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "G"]

@@ -1,0 +1,35 @@
+# Least-privilege udev rules for ZWO USB HID astronomy devices (EFW).
+#
+# ZWO's libEFWFilter (v1.7.0) is built on hidapi-hidraw and communicates exclusively
+# through Linux /dev/hidraw* nodes. It does not open /dev/bus/usb/* nodes and does not
+# require sysfs USB driver bind/unbind access, drivers_autoprobe, device/hub power/level
+# writes, or usbcore.usbfs_memory_mb tuning.
+#
+# Access model:
+#   - Headless observatory services / daemons / SSH sessions (no active desktop seat):
+#     GROUP="zwo", MODE="0660" grants read/write access only to root and members of the
+#     dedicated "zwo" system group.
+#   - Attended desktop Linux sessions:
+#     TAG+="uaccess" allows systemd-logind to grant a dynamic POSIX ACL on the matched
+#     /dev/hidraw* node to the active local seat user (the 70- prefix ensures this rule
+#     runs before systemd's 73-seat-late.rules evaluates uaccess).
+#
+# Installation (requires root; never auto-installed by pyzwo):
+#   1. Create the dedicated device-access group and add your service/operator account:
+#        sudo groupadd --system zwo
+#        sudo usermod -aG zwo <user>
+#   2. Install this rules file and reload udev:
+#        sudo install -m 0644 pyzwo/udev/70-pyzwo.rules /etc/udev/rules.d/70-pyzwo.rules
+#        sudo udevadm control --reload-rules
+#        sudo udevadm trigger --subsystem-match=hidraw
+#   3. Re-login (or restart the systemd service) so supplementary group membership applies,
+#      or replug the USB cable if udevadm trigger was not run.
+#
+# Optional per-product restriction:
+#   By default, the rule below matches any ZWO USB HID device (ATTRS{idVendor}=="03c3").
+#   To restrict access to specific product IDs only, add ATTRS{idProduct}=="<pid>",
+#   for example:
+#     # ZWO EFW 7x2" II (03c3:1f01; legacy/other EFWs may use 1f01 or 1f02)
+#     SUBSYSTEM=="hidraw", KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", ATTRS{idProduct}=="1f01", GROUP="zwo", MODE="0660", TAG+="uaccess"
+
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", GROUP="zwo", MODE="0660", TAG+="uaccess"
