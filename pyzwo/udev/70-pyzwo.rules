@@ -1,6 +1,6 @@
 # Least-privilege udev rules for ZWO USB HID astronomy devices (EFW).
 #
-# ZWO's libEFWFilter (v1.7.0) is built on hidapi-hidraw and communicates exclusively
+# ZWO's libEFWFilter (v1.8.4) is built on hidapi-hidraw and communicates exclusively
 # through Linux /dev/hidraw* nodes. It does not open /dev/bus/usb/* nodes and does not
 # require sysfs USB driver bind/unbind access, drivers_autoprobe, device/hub power/level
 # writes, or usbcore.usbfs_memory_mb tuning.

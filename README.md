@@ -16,7 +16,7 @@ It started for my own setup, but it's MPL-2.0-licensed and free to grab for main
 
 ZWO distributes precompiled C shared libraries (`.so` / `.dylib` / `.dll`) and flat C headers (`.h`). Rather than compiling a C++ wrapper extension per Python version and CPU architecture, `pyzwo` binds the C ABI directly using standard-library `ctypes`.
 
-To check `ctypes` signatures against the bundled ZWO `.h` header without requiring proprietary vendor binaries to be installed, `tests/header_checker.py` parses the C function prototypes for the bound USB API (`pyzwo/include/EFW_filter.h`) and verifies their `argtypes` and `restype` against a fake `CDLL` surface alongside unit checks for `_EFWInfo` struct layout and `EFWErrorCode` names. Unbound C functions and header-parsed enum integer values are not compared automatically.
+To check `ctypes` signatures and enums against the bundled ZWO `.h` header without requiring proprietary vendor binaries to be installed, `tests/header_checker.py` parses the C function prototypes and enum values in `pyzwo/include/EFW_filter.h` and verifies their `argtypes`, `restype`, struct layouts (`_EFWInfo`, `_EFWID`), and `EFWErrorCode` names and integer values against a fake `CDLL` surface. (Note: the bundled `EFW_filter.h` adds the missing `EFW_ERROR_UNKNOWN = 10` entry omitted in upstream SDK `1.8.4` so that `EFW_ERROR_CLOSED = 11` matches the actual runtime return code when operating on a closed handle.)
 
 Key lifecycle and hardware behaviors in the synchronous EFW controller (`FilterWheel` / `EFW`):
 - **Explicit discovery & zero-based slots:** `open()` validates `0 <= device_index < get_num()` before querying `EFWGetID(device_index)`. Slot positions follow the ZWO SDK's zero-based convention (`0 .. slot_num - 1`), with `-1` indicating the wheel is currently in motion (`EFW_ERROR_MOVING`).
@@ -34,9 +34,10 @@ Key lifecycle and hardware behaviors in the synchronous EFW controller (`FilterW
 
 ## Device classes & roadmap
 
-- **EFW (Filter Wheels, SDK `v1.7.0` / `libEFWFilter.so.1.7.0`)** — **Implemented (synchronous baseline; 12 of 16 C functions bound: `EFWGetSDKVersion`, `EFWGetNum`, `EFWGetID`, `EFWOpen`, `EFWClose`, `EFWGetProperty`, `EFWGetPosition`, `EFWSetPosition`, `EFWGetDirection`, `EFWSetDirection`, `EFWCalibrate`, `EFWGetFirmwareVersion`; `EFWGetProductIDs`, `EFWGetHWErrorCode`, `EFWGetSerialNumber`, and `EFWSetID` not yet bound).**
-  - [x] **ZWO EFW 7×2" II (USB Type-C revision, fw `3.5.2`, `03c3:1f01`)** — Verified on hardware (read-only + `test_hardware_move_next_slot_and_back`, pyzwo 0.1.0, SDK 1.7.0, openSUSE Tumbleweed x86_64).
-  - [ ] **ZWO EFW 7×2" (legacy USB Type-B)** and other slot variants (`5×2"`, `7×36mm`, `8×1.25"`, `Mini`) — Untested on hardware (uses the same `libEFWFilter` SDK calls and dynamic `slotNum` discovery).
+- **EFW (Filter Wheels, SDK `v1.8.4` / `libEFWFilter.so.1.8.4`)** — **Implemented (synchronous baseline).**
+  - [x] **ZWO EFW 7×2" II (USB Type-C revision, fw `3.5.2`, `03c3:1f01`)** — Verified on hardware (read-only + `test_hardware_move_next_slot_and_back`, pyzwo 0.1.0, SDK 1.8.4, openSUSE Tumbleweed x86_64).
+  - [x] **ZWO EFW 7×2" (legacy revision, fw `3.0.6`, `03c3:1f01`)** — Verified on hardware (read-only + `test_hardware_move_next_slot_and_back`, pyzwo 0.1.0, SDK 1.8.4, openSUSE Tumbleweed x86_64).
+  - [ ] Other slot variants (`5×2"`, `7×36mm`, `8×1.25"`, `Mini`) — Untested on hardware (uses the same `libEFWFilter` SDK calls and dynamic `slotNum` discovery).
 - **Asynchronous EFW execution** — **Planned next (Phase 2).**
 - **EAF (Focusers, SDK `v1.7.7` / `libEAFFocuser.so.1.7.7`)** — **Planned next (Phases 3–4).**
 - **ASI Cameras (`libASICamera2`) & AM Mounts** — **Planned.**
@@ -45,7 +46,7 @@ Key lifecycle and hardware behaviors in the synchronous EFW controller (`FilterW
 
 | Device Class | Bundled Header | Shared Library | `GetSDKVersion()` |
 |---|---|---|---|
-| **EFW** | `pyzwo/include/EFW_filter.h` | `libEFWFilter.so.1.7.0` | `"1, 7"` (`1.7.0`) |
+| **EFW** | `pyzwo/include/EFW_filter.h` | `libEFWFilter.so.1.8.4` | `"1, 8, 4"` (`1.8.4`) |
 
 ## Platform & architecture status
 
@@ -59,7 +60,7 @@ The package is pure Python (`dependencies = []`, `requires-python = ">=3.11"`) a
 
 `pyzwo` never auto-installs system rules and never requires running the Python process as `root`.
 
-`libEFWFilter.so.1.7.0` uses `hidapi-hidraw` on Linux and accesses only `/dev/hidraw*` nodes. Unlike the upstream ZWO SDK ruleset, `pyzwo/udev/70-pyzwo.rules` does **not** grant world-writable (`0666`) access to USB buses, `/sys/bus/usb/drivers/usb/bind` or `unbind`, `drivers_autoprobe`, hub `power/level` attributes, or `usbcore.usbfs_memory_mb`. Instead, it scopes access strictly to ZWO USB HID nodes (`SUBSYSTEM=="hidraw"`, `ATTRS{idVendor}=="03c3"`):
+`libEFWFilter.so.1.8.4` uses `hidapi-hidraw` on Linux and accesses only `/dev/hidraw*` nodes. Unlike the upstream ZWO SDK ruleset, `pyzwo/udev/70-pyzwo.rules` does **not** grant world-writable (`0666`) access to USB buses, `/sys/bus/usb/drivers/usb/bind` or `unbind`, `drivers_autoprobe`, hub `power/level` attributes, or `usbcore.usbfs_memory_mb`. Instead, it scopes access strictly to ZWO USB HID nodes (`SUBSYSTEM=="hidraw"`, `ATTRS{idVendor}=="03c3"`):
 
 - **Attended desktop Linux sessions:** `TAG+="uaccess"` lets `systemd-logind` dynamically grant an ACL on the matching `/dev/hidraw*` node to the active local seat user (ordered at `70-` so it runs before `73-seat-late.rules`).
 - **Headless observatory services / daemons / SSH sessions:** Desktop seat ACLs (`uaccess`) do not apply when no local seat session is active. The rule assigns `GROUP="zwo", MODE="0660"` so only `root` and members of the `zwo` group can open the device node.
@@ -102,7 +103,7 @@ uvx ruff format --check .
 
 ### Real-hardware tests (read-only vs. opt-in motion)
 
-When `libEFWFilter.so.1.7.0`, `70-pyzwo.rules`, and a physical ZWO EFW are installed locally:
+When `libEFWFilter.so.1.8.4`, `70-pyzwo.rules`, and a physical ZWO EFW are installed locally:
 
 - **Read-only hardware test (`test_hardware_readonly_open_and_query`)** opens the wheel without writing settings, verifies `slot_num > 0`, and checks that `get_slot()` returns a settled slot `0 <= slot < slot_num`:
   ```bash

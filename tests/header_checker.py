@@ -114,3 +114,31 @@ def parse_header_prototypes(
         if norm_ok:
             prototypes[func_name] = (type_map[ret_norm], arg_types)
     return prototypes
+
+
+def parse_header_enum(header_path: Path, enum_name: str) -> dict[str, int]:
+    """Parse `typedef enum <enum_name> { ... }` from a C header into a `{name: int_value}` dict."""
+    text = header_path.read_text(encoding="utf-8", errors="replace")
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"//[^\n]*", "", text)
+    pattern = re.compile(rf"typedef\s+enum\s+{re.escape(enum_name)}\s*\{{([^}}]+)\}}", re.DOTALL)
+    match = pattern.search(text)
+    if match is None:
+        raise ValueError(f"Enum {enum_name} not found in {header_path}")
+    body = match.group(1)
+    values: dict[str, int] = {}
+    next_val = 0
+    for raw_entry in body.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if "=" in entry:
+            name_part, val_part = entry.split("=", 1)
+            name = name_part.strip()
+            val = int(val_part.strip(), 0)
+        else:
+            name = entry
+            val = next_val
+        values[name] = val
+        next_val = val + 1
+    return values

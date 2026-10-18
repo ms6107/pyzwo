@@ -24,7 +24,11 @@ from ._loader import (
 
 
 class EFWErrorCode(IntEnum):
-    """ZWO EFW SDK error codes from EFW_filter.h."""
+    """ZWO EFW SDK error codes from EFW_filter.h.
+
+    Note: In EFW SDK 1.8.4, EFW_filter.h omits an internal error code at 10, so
+    calling operations on a closed handle returns 11 (EFW_ERROR_CLOSED) at runtime.
+    """
 
     EFW_SUCCESS = 0
     EFW_ERROR_INVALID_INDEX = 1
@@ -35,7 +39,9 @@ class EFWErrorCode(IntEnum):
     EFW_ERROR_ERROR_STATE = 6
     EFW_ERROR_GENERAL_ERROR = 7
     EFW_ERROR_NOT_SUPPORTED = 8
-    EFW_ERROR_CLOSED = 9
+    EFW_ERROR_INVALID_LENGTH = 9
+    EFW_ERROR_UNKNOWN = 10
+    EFW_ERROR_CLOSED = 11
     EFW_ERROR_END = -1
 
 
@@ -47,6 +53,17 @@ class _EFWInfo(ctypes.Structure):
         ("Name", ctypes.c_char * 64),
         ("slotNum", ctypes.c_int),
     ]
+
+
+class _EFWID(ctypes.Structure):
+    """C struct EFW_ID (and typedef EFW_SN) from EFW_filter.h."""
+
+    _fields_ = [
+        ("id", ctypes.c_ubyte * 8),
+    ]
+
+
+_EFWSN = _EFWID
 
 
 @dataclass(frozen=True)
@@ -68,6 +85,9 @@ class ZwoEfwSDK:
 
         self._lib.EFWGetSDKVersion.argtypes = []
         self._lib.EFWGetSDKVersion.restype = ctypes.c_char_p
+
+        self._lib.EFWCheck.argtypes = [ctypes.c_int, ctypes.c_int]
+        self._lib.EFWCheck.restype = ctypes.c_int
 
         self._lib.EFWGetNum.argtypes = []
         self._lib.EFWGetNum.restype = ctypes.c_int
@@ -99,6 +119,9 @@ class ZwoEfwSDK:
         self._lib.EFWCalibrate.argtypes = [ctypes.c_int]
         self._lib.EFWCalibrate.restype = ctypes.c_int
 
+        self._lib.EFWGetHWErrorCode.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+        self._lib.EFWGetHWErrorCode.restype = ctypes.c_int
+
         self._lib.EFWGetFirmwareVersion.argtypes = [
             ctypes.c_int,
             ctypes.POINTER(ctypes.c_ubyte),
@@ -106,6 +129,12 @@ class ZwoEfwSDK:
             ctypes.POINTER(ctypes.c_ubyte),
         ]
         self._lib.EFWGetFirmwareVersion.restype = ctypes.c_int
+
+        self._lib.EFWGetSerialNumber.argtypes = [ctypes.c_int, ctypes.POINTER(_EFWSN)]
+        self._lib.EFWGetSerialNumber.restype = ctypes.c_int
+
+        self._lib.EFWSetID.argtypes = [ctypes.c_int, _EFWID]
+        self._lib.EFWSetID.restype = ctypes.c_int
 
     @staticmethod
     def _check(rc: int, op: str) -> None:
@@ -119,6 +148,9 @@ class ZwoEfwSDK:
     def get_sdk_version(self) -> str:
         raw = self._lib.EFWGetSDKVersion()
         return raw.decode("ascii", errors="replace") if raw else ""
+
+    def check(self, vid: int, pid: int) -> bool:
+        return bool(self._lib.EFWCheck(vid, pid))
 
     def get_num(self) -> int:
         return int(self._lib.EFWGetNum())
@@ -210,6 +242,12 @@ class FilterWheel:
         self.efw_id: int | None = None
         self.info: EfwInfo | None = None
         self.state: DeviceState = DeviceState.DISCONNECTED
+
+    @staticmethod
+    def check_device(vid: int, pid: int, *, sdk: ZwoEfwSDK | None = None) -> bool:
+        """Return True if the USB (VID, PID) pair is a supported ZWO EFW device."""
+        active_sdk = sdk if sdk is not None else ZwoEfwSDK()
+        return active_sdk.check(vid, pid)
 
     @property
     def sdk(self) -> ZwoEfwSDK:

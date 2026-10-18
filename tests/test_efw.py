@@ -13,18 +13,29 @@ import unittest
 from unittest.mock import patch
 
 from pyzwo import DeviceState, ZwoError, ZwoTimeoutError
-from pyzwo.efw import EFW, EFWErrorCode, FilterWheel, ZwoEfwSDK, _EFWInfo
+from pyzwo.efw import _EFWID, _EFWSN, EFW, EFWErrorCode, FilterWheel, ZwoEfwSDK, _EFWInfo
 
 try:
-    from tests.header_checker import INCLUDE_DIR, FakeCDLL, parse_header_prototypes
+    from tests.header_checker import INCLUDE_DIR, FakeCDLL, parse_header_enum, parse_header_prototypes
 except ModuleNotFoundError:
-    from header_checker import INCLUDE_DIR, FakeCDLL, parse_header_prototypes  # type: ignore[no-redef]
+    from header_checker import (  # type: ignore[no-redef]
+        INCLUDE_DIR,
+        FakeCDLL,
+        parse_header_enum,
+        parse_header_prototypes,
+    )
 
 EFW_HEADER = INCLUDE_DIR / "EFW_filter.h"
 
 
 class FakeEfwSDK:
-    """In-memory mock of ZwoEfwSDK for unit testing without vendor shared libraries."""
+    """In-memory mock of ZwoEfwSDK for unit testing FilterWheel without vendor shared libraries.
+
+    Note: ``check()`` / ``FilterWheel.check_device()`` (wrapping ``EFWCheck``) and C-only bindings
+    (``EFWGetHWErrorCode``, ``EFWGetSerialNumber``, ``EFWSetID``) are intentionally not mocked here;
+    their C ABI signatures are verified in ``TestEfwCtypesHeader``, and testing a hardcoded fake
+    VID/PID check provides no behavioral value.
+    """
 
     def __init__(self, slot_num: int = 7, initial_slot: int = 0) -> None:
         self.slot_num = slot_num
@@ -55,7 +66,7 @@ class FakeEfwSDK:
             raise exc
 
     def get_sdk_version(self) -> str:
-        return "1, 7"
+        return "1, 8, 4"
 
     def get_num(self) -> int:
         self.get_num_calls += 1
@@ -152,9 +163,13 @@ class TestEfwCtypesHeader(unittest.TestCase):
     def test_efw_struct_and_enum_match_header(self) -> None:
         text = EFW_HEADER.read_text(encoding="utf-8", errors="replace")
         self.assertIn("typedef struct _EFW_INFO", text)
+        self.assertIn("typedef struct _EFW_ID", text)
+        self.assertIn("typedef EFW_ID EFW_SN;", text)
         self.assertEqual(ctypes.sizeof(_EFWInfo), 4 + 64 + 4)
-        for member in EFWErrorCode:
-            self.assertIn(member.name, text, f"{member.name} missing from EFW_filter.h")
+        self.assertEqual(ctypes.sizeof(_EFWID), 8)
+        self.assertIs(_EFWSN, _EFWID)
+        header_enum = parse_header_enum(EFW_HEADER, "_EFW_ERROR_CODE")
+        self.assertEqual({m.name: int(m.value) for m in EFWErrorCode}, header_enum)
 
     def test_efw_ctypes_signatures_match_c_header(self) -> None:
         prototypes = parse_header_prototypes(
@@ -162,6 +177,8 @@ class TestEfwCtypesHeader(unittest.TestCase):
             "EFW_API",
             extra_types={
                 "EFW_INFO*": ctypes.POINTER(_EFWInfo),
+                "EFW_SN*": ctypes.POINTER(_EFWSN),
+                "EFW_ID": _EFWID,
                 "EFW_ERROR_CODE": ctypes.c_int,
             },
         )
@@ -172,6 +189,7 @@ class TestEfwCtypesHeader(unittest.TestCase):
             sdk = ZwoEfwSDK(_lib=FakeCDLL())
         bound_funcs = [
             "EFWGetSDKVersion",
+            "EFWCheck",
             "EFWGetNum",
             "EFWGetID",
             "EFWOpen",
@@ -182,7 +200,10 @@ class TestEfwCtypesHeader(unittest.TestCase):
             "EFWGetDirection",
             "EFWSetDirection",
             "EFWCalibrate",
+            "EFWGetHWErrorCode",
             "EFWGetFirmwareVersion",
+            "EFWGetSerialNumber",
+            "EFWSetID",
         ]
         for name in bound_funcs:
             self.assertIn(name, prototypes, f"{name} not found in EFW_filter.h")
@@ -205,6 +226,19 @@ class TestEfwCtypesHeader(unittest.TestCase):
             sdk.get_position(0)
         self.assertEqual(ctx.exception.code, EFWErrorCode.EFW_ERROR_REMOVED)
         self.assertEqual(ctx.exception.code_name, "EFW_ERROR_REMOVED")
+
+        # SDK 1.8.4 closed-handle return code (11) and unknown code (10)
+        lib.EFWGetPosition._impl = lambda _id, _ptr: 11
+        with self.assertRaises(ZwoError) as ctx_closed:
+            sdk.get_position(0)
+        self.assertEqual(ctx_closed.exception.code, EFWErrorCode.EFW_ERROR_CLOSED)
+        self.assertEqual(ctx_closed.exception.code_name, "EFW_ERROR_CLOSED")
+
+        lib.EFWGetPosition._impl = lambda _id, _ptr: 10
+        with self.assertRaises(ZwoError) as ctx_unk:
+            sdk.get_position(0)
+        self.assertEqual(ctx_unk.exception.code, EFWErrorCode.EFW_ERROR_UNKNOWN)
+        self.assertEqual(ctx_unk.exception.code_name, "EFW_ERROR_UNKNOWN")
 
 
 class TestEfwClientUnit(unittest.TestCase):
@@ -634,14 +668,23 @@ class TestEfwHardware(unittest.TestCase):
 
     @unittest.skipUnless(_efw_connected(), "No physical ZWO EFW connected via USB")
     def test_hardware_readonly_open_and_query(self) -> None:
-        with EFW() as wheel:
-            assert wheel.info is not None
-            self.assertGreater(wheel.info.slot_num, 0)
-            slot = wheel.get_slot()
-            self.assertTrue(
-                0 <= slot < wheel.info.slot_num,
-                f"Unexpected slot={slot} for slot_num={wheel.info.slot_num}",
-            )
+        num_wheels = ZwoEfwSDK().get_num()
+        self.assertGreater(num_wheels, 0)
+        for idx in range(num_wheels):
+            with self.subTest(device_index=idx):
+                with EFW(device_index=idx) as wheel:
+                    assert wheel.info is not None
+                    dev_id = wheel.info.id
+                    self.assertGreater(wheel.info.slot_num, 0)
+                    slot = wheel.get_slot()
+                    self.assertTrue(
+                        0 <= slot < wheel.info.slot_num,
+                        f"Unexpected slot={slot} for slot_num={wheel.info.slot_num}",
+                    )
+                with self.assertRaises(ZwoError) as ctx_closed:
+                    wheel.sdk.get_position(dev_id)
+                self.assertEqual(ctx_closed.exception.code, EFWErrorCode.EFW_ERROR_CLOSED)
+                self.assertEqual(ctx_closed.exception.code_name, "EFW_ERROR_CLOSED")
 
     @unittest.skipUnless(_efw_connected(), "No physical ZWO EFW connected via USB")
     @unittest.skipUnless(
@@ -649,23 +692,26 @@ class TestEfwHardware(unittest.TestCase):
         "Set PYZWO_RUN_HARDWARE_MOTION_TESTS=1 to run physical filter wheel motion tests",
     )
     def test_hardware_move_next_slot_and_back(self) -> None:
-        with EFW() as wheel:
-            assert wheel.info is not None
-            slot_num = wheel.info.slot_num
-            self.assertGreater(slot_num, 1)
-            start_slot = wheel.get_slot()
-            self.assertTrue(0 <= start_slot < slot_num)
-            target_slot = (start_slot + 1) % slot_num
+        num_wheels = ZwoEfwSDK().get_num()
+        self.assertGreater(num_wheels, 0)
+        for idx in range(num_wheels):
+            with self.subTest(device_index=idx), EFW(device_index=idx) as wheel:
+                assert wheel.info is not None
+                slot_num = wheel.info.slot_num
+                self.assertGreater(slot_num, 1)
+                start_slot = wheel.get_slot()
+                self.assertTrue(0 <= start_slot < slot_num)
+                target_slot = (start_slot + 1) % slot_num
 
-            settled_next, _ = wheel.move_to_slot(target_slot, poll_interval=0.05, timeout=30.0)
-            self.assertEqual(settled_next, target_slot)
-            self.assertEqual(wheel.get_slot(), target_slot)
-            self.assertEqual(wheel.state, DeviceState.READY)
+                settled_next, _ = wheel.move_to_slot(target_slot, poll_interval=0.05, timeout=30.0)
+                self.assertEqual(settled_next, target_slot)
+                self.assertEqual(wheel.get_slot(), target_slot)
+                self.assertEqual(wheel.state, DeviceState.READY)
 
-            settled_back, _ = wheel.move_to_slot(start_slot, poll_interval=0.05, timeout=30.0)
-            self.assertEqual(settled_back, start_slot)
-            self.assertEqual(wheel.get_slot(), start_slot)
-            self.assertEqual(wheel.state, DeviceState.READY)
+                settled_back, _ = wheel.move_to_slot(start_slot, poll_interval=0.05, timeout=30.0)
+                self.assertEqual(settled_back, start_slot)
+                self.assertEqual(wheel.get_slot(), start_slot)
+                self.assertEqual(wheel.state, DeviceState.READY)
 
 
 if __name__ == "__main__":
