@@ -82,8 +82,8 @@ After adding a user to the `zwo` group, log out and log back in (or restart the 
 from pyzwo import EFW
 
 with EFW(device_index=0) as wheel:
-    print(wheel.info)          # EfwInfo(id=0, name='EFW', slot_num=7, firmware_version='3.5.2', unidirectional=False)
-    print(wheel.get_slot())    # 0-based SDK slot (0 .. slot_num - 1), or -1 if moving
+    print(wheel.info)  # EfwInfo(id=0, name='EFW', slot_num=7, firmware_version='3.5.2', unidirectional=False)
+    print(wheel.get_slot())  # 0-based SDK slot (0 .. slot_num - 1), or -1 if moving
     settled_slot, polls = wheel.move_to_slot(2, poll_interval=0.05, timeout=30.0)
     print(f"Settled at slot {settled_slot} after {polls} moving polls")
 ```
@@ -96,6 +96,8 @@ The default test suite uses in-memory fakes and `FakeCDLL` and runs in CI withou
 
 ```bash
 PYZWO_EFWFILTER_LIB=/nonexistent/libEFWFilter.so python3 -m unittest discover -s tests -v
+uvx ruff check .
+uvx ruff format --check .
 ```
 
 ### Real-hardware tests (read-only vs. opt-in motion)

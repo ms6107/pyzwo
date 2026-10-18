@@ -6,12 +6,23 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: Ruff Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Run ruff lint and format checks
+        run: |
+          uvx ruff check .
+          uvx ruff format --check .
+
   unit-tests:
     name: Unit & ABI Header Checks (Python 3.11)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Run SDK-independent unit and C-header verification tests

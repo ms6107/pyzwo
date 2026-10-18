@@ -4,12 +4,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Reusable C-header parser and fake CDLL surface for verifying ctypes signatures without native binaries."""
+
 from __future__ import annotations
 
-from collections.abc import Callable
 import ctypes
-from pathlib import Path
 import re
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 INCLUDE_DIR = Path(__file__).resolve().parent.parent / "pyzwo" / "include"

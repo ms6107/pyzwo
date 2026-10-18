@@ -4,12 +4,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """ZWO EFW (Electronic Filter Wheel) SDK ctypes bindings and synchronous controller."""
+
 from __future__ import annotations
 
 import ctypes
+import time
 from dataclasses import dataclass
 from enum import IntEnum
-import time
 from typing import Any
 
 from ._loader import (
@@ -170,9 +171,7 @@ class ZwoEfwSDK:
 
     def get_firmware_version(self, efw_id: int) -> str:
         maj, min_, bld = ctypes.c_ubyte(), ctypes.c_ubyte(), ctypes.c_ubyte()
-        rc = self._lib.EFWGetFirmwareVersion(
-            efw_id, ctypes.byref(maj), ctypes.byref(min_), ctypes.byref(bld)
-        )
+        rc = self._lib.EFWGetFirmwareVersion(efw_id, ctypes.byref(maj), ctypes.byref(min_), ctypes.byref(bld))
         self._check(rc, f"EFWGetFirmwareVersion({efw_id})")
         return f"{maj.value}.{min_.value}.{bld.value}"
 
@@ -440,12 +439,7 @@ class FilterWheel:
             raise ZwoError("FilterWheel is busy", EFWErrorCode.EFW_ERROR_MOVING, "EFW_ERROR_MOVING")
 
         slot_num = self.info.slot_num if self.info is not None else 0
-        if (
-            isinstance(slot, bool)
-            or not isinstance(slot, int)
-            or slot < 0
-            or (slot_num > 0 and slot >= slot_num)
-        ):
+        if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0 or (slot_num > 0 and slot >= slot_num):
             upper = slot_num - 1 if slot_num > 0 else "?"
             raise ZwoError(
                 f"EFWSetPosition({efw_id}, {slot}) outside allowed range [0, {upper}]",

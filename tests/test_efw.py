@@ -4,6 +4,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """C-header verification, unit tests, and opt-in hardware tests for pyzwo.efw."""
+
 from __future__ import annotations
 
 import ctypes

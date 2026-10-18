@@ -4,21 +4,22 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Shared library loader, exceptions, and validation helpers for pyzwo."""
+
 from __future__ import annotations
 
 import ctypes
-from ctypes.util import find_library
-from enum import Enum
 import math
 import os
-from pathlib import Path
 import platform
 import sys
+from ctypes.util import find_library
+from enum import StrEnum
+from pathlib import Path
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
 
-class DeviceState(str, Enum):
+class DeviceState(StrEnum):
     """Lifecycle and connection state of a synchronous ZWO controller."""
 
     DISCONNECTED = "disconnected"
@@ -64,12 +65,7 @@ def attach_rollback_error(init_exc: BaseException, dev_id: int, close_exc: BaseE
 
 def validate_timeout(timeout: float) -> None:
     """Validate that timeout is a positive finite number."""
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or not math.isfinite(timeout)
-        or timeout <= 0
-    ):
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 
 
