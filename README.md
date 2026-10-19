@@ -14,9 +14,9 @@ It started for my own setup, but it's MPL-2.0-licensed and free to grab for main
 
 ## How it works
 
-ZWO distributes precompiled C shared libraries (`.so` / `.dylib` / `.dll`) and flat C headers (`.h`). Rather than compiling a C++ wrapper extension per Python version and CPU architecture, `pyzwo` binds the C ABI directly using standard-library `ctypes`.
+ZWO distributes precompiled C shared libraries (`.so` / `.dylib` / `.dll`) and flat C headers (`.h`). Rather than compiling a C++ wrapper extension per Python version and CPU architecture, `pyzwo` binds the C ABI directly using standard-library `ctypes` in `pyzwo/_efw_sdk.py` and exposes the high-level controller (`FilterWheel` / `EFW`) in `pyzwo/efw.py`.
 
-To check `ctypes` signatures and enums against the bundled ZWO `.h` header without requiring proprietary vendor binaries to be installed, `tests/header_checker.py` parses the C function prototypes and enum values in `pyzwo/include/EFW_filter.h` and verifies their `argtypes`, `restype`, struct layouts (`_EFWInfo`, `_EFWID`), and `EFWErrorCode` names and integer values against a fake `CDLL` surface. (Note: the bundled `EFW_filter.h` adds the missing `EFW_ERROR_UNKNOWN = 10` entry omitted in upstream SDK `1.8.4` so that `EFW_ERROR_CLOSED = 11` matches the actual runtime return code when operating on a closed handle.)
+To verify `ctypes` struct layouts (`_EFWInfo`, `_EFWID`), `EFWErrorCode` enum values, function signatures, top-level AST declarations (functions and typedefs), and header macros (`EFW_ID_MAX`) against the bundled `pyzwo/include/EFW_filter.h` without requiring proprietary vendor binaries, `tests/header_checker.py` uses a C11 compiler ABI probe (`-std=c11 -fsyntax-only` with `_Static_assert` and `_Generic`). Because C ABI checks only need to run when SDK bindings or vendor headers change, the compiler probe (`TestEfwCtypesHeader`) is opt-in via `PYZWO_RUN_ABI_TESTS=1`. (Note: the bundled `EFW_filter.h` adds the missing `EFW_ERROR_UNKNOWN = 10` entry omitted in upstream SDK `1.8.4` so that `EFW_ERROR_CLOSED = 11` matches the actual runtime return code when operating on a closed handle.)
 
 Key lifecycle and hardware behaviors in the synchronous EFW controller (`FilterWheel` / `EFW`):
 - **Explicit discovery & zero-based slots:** `open()` validates `0 <= device_index < get_num()` before querying `EFWGetID(device_index)`. Slot positions follow the ZWO SDK's zero-based convention (`0 .. slot_num - 1`), with `-1` indicating the wheel is currently in motion (`EFW_ERROR_MOVING`).
@@ -91,14 +91,22 @@ with EFW(device_index=0) as wheel:
 
 ## Running tests
 
-### Default unit & C-header suite (no vendor binaries or hardware required)
+### Default unit suite (no vendor binaries, C compiler, or hardware required)
 
-The default test suite uses in-memory fakes and `FakeCDLL` and runs in CI without `libEFWFilter.so` installed. Pointing `PYZWO_EFWFILTER_LIB` at a non-existent path guarantees that hardware tests are skipped even on a machine where the vendor library and a wheel are present:
+The default test suite uses in-memory fakes and `FakeCDLL` and runs in CI without `libEFWFilter.so` or a C compiler installed. Pointing `PYZWO_EFWFILTER_LIB` at a non-existent path guarantees that hardware tests are skipped even on a machine where the vendor library and a wheel are present:
 
 ```bash
 PYZWO_EFWFILTER_LIB=/nonexistent/libEFWFilter.so python3 -m unittest discover -s tests -v
 uvx ruff check .
 uvx ruff format --check .
+```
+
+### Opt-in C11 compiler ABI verification (when `pyzwo/_efw_sdk.py` or C headers change)
+
+To verify `ctypes` struct layouts, enum values, function signatures, top-level AST declarations (functions and typedefs), and header macro definitions (`EFW_ID_MAX`) against `pyzwo/include/EFW_filter.h` using `ziglang` (`zig clang` from `[dependency-groups].abi`):
+
+```bash
+PYZWO_RUN_ABI_TESTS=1 PYZWO_EFWFILTER_LIB=/nonexistent/libEFWFilter.so uv run --group abi python -m unittest tests.test_efw_sdk -v
 ```
 
 ### Real-hardware tests (read-only vs. opt-in motion)
