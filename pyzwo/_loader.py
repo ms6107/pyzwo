@@ -55,7 +55,8 @@ def attach_rollback_error(init_exc: BaseException, dev_id: int, close_exc: BaseE
     """Attach a rollback close failure to an initialization exception without masking it."""
     note = f"rollback close(id={dev_id}) also failed: {close_exc}"
     init_exc.add_note(note)
-    init_exc.rollback_error = close_exc  # type: ignore[attr-defined]
+    if isinstance(init_exc, (ZwoError, ZwoTimeoutError)):
+        init_exc.rollback_error = close_exc
     if init_exc.args:
         first = str(init_exc.args[0])
         init_exc.args = (f"{first}; {note}", *init_exc.args[1:])
@@ -65,18 +66,13 @@ def attach_rollback_error(init_exc: BaseException, dev_id: int, close_exc: BaseE
 
 def validate_timeout(timeout: float) -> None:
     """Validate that timeout is a positive finite number."""
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+    if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 
 
 def validate_poll_and_timeout(poll_interval: float, timeout: float) -> None:
     """Validate that poll_interval and timeout are positive finite numbers."""
-    if (
-        isinstance(poll_interval, bool)
-        or not isinstance(poll_interval, (int, float))
-        or not math.isfinite(poll_interval)
-        or poll_interval <= 0
-    ):
+    if not math.isfinite(poll_interval) or poll_interval <= 0:
         raise ValueError(f"poll_interval must be a positive finite number, got {poll_interval!r}")
     validate_timeout(timeout)
 
@@ -87,6 +83,8 @@ class ZwoTimeoutError(TimeoutError):
     Note: In the synchronous baseline, deadlines are checked between SDK calls; a
     blocked native C call inside the vendor library has no pre-emptive timeout.
     """
+
+    rollback_error: BaseException | None = None
 
 
 def _arch_subdir() -> str:

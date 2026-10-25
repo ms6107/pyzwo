@@ -7,15 +7,16 @@ on:
 
 jobs:
   lint:
-    name: Ruff Lint & Format Check
+    name: Ruff & Mypy Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
-      - name: Run ruff lint and format checks
+      - name: Run ruff and mypy checks
         run: |
           uvx ruff check .
           uvx ruff format --check .
+          uvx mypy pyzwo tests
 
   unit-tests:
     name: Unit Tests (Python 3.11)

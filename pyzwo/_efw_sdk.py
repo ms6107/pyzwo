@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ctypes
 from enum import IntEnum
-from typing import Any
+from typing import Any, Protocol
 
 from ._loader import ZwoError, load_zwo_library
 
@@ -57,6 +57,23 @@ class _EFWID(ctypes.Structure):
 
 
 _EFWSN = _EFWID
+
+
+class EfwSDKProtocol(Protocol):
+    """Protocol implemented by ZwoEfwSDK and test doubles."""
+
+    def check(self, vid: int, pid: int) -> bool: ...
+    def get_num(self) -> int: ...
+    def get_id(self, index: int) -> int: ...
+    def open(self, efw_id: int) -> None: ...
+    def close(self, efw_id: int) -> None: ...
+    def get_property(self, efw_id: int) -> tuple[int, str, int]: ...
+    def get_position(self, efw_id: int) -> int: ...
+    def set_position(self, efw_id: int, slot: int) -> None: ...
+    def get_direction(self, efw_id: int) -> bool: ...
+    def set_direction(self, efw_id: int, unidirectional: bool) -> None: ...
+    def calibrate(self, efw_id: int) -> None: ...
+    def get_firmware_version(self, efw_id: int) -> str: ...
 
 
 class ZwoEfwSDK:
@@ -202,7 +219,7 @@ class ZwoEfwSDK:
         return bytes(sn.id)
 
     def set_id(self, efw_id: int, alias: bytes) -> None:
-        if not isinstance(alias, (bytes, bytearray)) or len(alias) != 8:
+        if len(alias) != 8:
             raise ValueError(f"EFW alias must be exactly 8 bytes, got {alias!r}")
         alias_struct = _EFWID((ctypes.c_ubyte * 8)(*alias))
         rc = self._lib.EFWSetID(efw_id, alias_struct)
@@ -212,6 +229,7 @@ class ZwoEfwSDK:
 __all__ = [
     "EFWErrorCode",
     "EFW_ID_MAX",
+    "EfwSDKProtocol",
     "ZwoEfwSDK",
     "_EFWID",
     "_EFWInfo",

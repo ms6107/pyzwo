@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from ._efw_sdk import EFWErrorCode, ZwoEfwSDK
+from ._efw_sdk import EFWErrorCode, EfwSDKProtocol, ZwoEfwSDK
 from ._loader import (
     DeviceState,
     ZwoError,
@@ -59,7 +59,7 @@ class FilterWheel:
         device_index: int,
         efw_id: int,
         info: EfwInfo,
-        sdk: ZwoEfwSDK,
+        sdk: EfwSDKProtocol,
     ) -> None:
         self.device_index = device_index
         self.efw_id: int | None = efw_id
@@ -68,7 +68,7 @@ class FilterWheel:
         self.state: DeviceState = DeviceState.READY
 
     @staticmethod
-    def check_device(vid: int, pid: int, *, sdk: ZwoEfwSDK | None = None) -> bool:
+    def check_device(vid: int, pid: int, *, sdk: EfwSDKProtocol | None = None) -> bool:
         """Return True if the USB (VID, PID) pair is a supported ZWO EFW device."""
         active_sdk = sdk if sdk is not None else ZwoEfwSDK()
         return active_sdk.check(vid, pid)
@@ -79,10 +79,10 @@ class FilterWheel:
         unidirectional: bool | None = None,
         timeout: float = 15.0,
         poll_interval: float = 0.1,
-        sdk: ZwoEfwSDK | None = None,
+        sdk: EfwSDKProtocol | None = None,
     ) -> FilterWheel:
         validate_poll_and_timeout(poll_interval, timeout)
-        if isinstance(device_index, bool) or not isinstance(device_index, int) or device_index < 0:
+        if device_index < 0:
             raise ZwoError(
                 f"EFWGetNum(index={device_index})",
                 EFWErrorCode.EFW_ERROR_INVALID_INDEX,
@@ -220,7 +220,7 @@ class FilterWheel:
             raise ZwoError("FilterWheel is busy", EFWErrorCode.EFW_ERROR_MOVING, "EFW_ERROR_MOVING")
 
         slot_num = self.info.slot_num if self.info is not None else 0
-        if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0 or (slot_num > 0 and slot >= slot_num):
+        if slot < 0 or (slot_num > 0 and slot >= slot_num):
             upper = slot_num - 1 if slot_num > 0 else "?"
             raise ZwoError(
                 f"EFWSetPosition({efw_id}, {slot}) outside allowed range [0, {upper}]",

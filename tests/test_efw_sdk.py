@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,31 +20,17 @@ from unittest.mock import patch
 
 from pyzwo import ZwoError
 from pyzwo._efw_sdk import _EFWID, _EFWSN, EFW_ID_MAX, EFWErrorCode, ZwoEfwSDK, _EFWInfo
-
-try:
-    from tests.header_checker import (
-        INCLUDE_DIR,
-        FakeCDLL,
-        ast_top_level_names,
-        compile_c_probe,
-        enum_probe_c_lines,
-        find_c_compiler,
-        header_macro_names,
-        signature_probe_c_lines,
-        struct_probe_c_lines,
-    )
-except ModuleNotFoundError:
-    from header_checker import (  # type: ignore[no-redef]
-        INCLUDE_DIR,
-        FakeCDLL,
-        ast_top_level_names,
-        compile_c_probe,
-        enum_probe_c_lines,
-        find_c_compiler,
-        header_macro_names,
-        signature_probe_c_lines,
-        struct_probe_c_lines,
-    )
+from tests.header_checker import (
+    INCLUDE_DIR,
+    FakeCDLL,
+    ast_top_level_names,
+    compile_c_probe,
+    enum_probe_c_lines,
+    find_c_compiler,
+    header_macro_names,
+    signature_probe_c_lines,
+    struct_probe_c_lines,
+)
 
 EFW_HEADER = INCLUDE_DIR / "EFW_filter.h"
 MOVING_POS = -1
@@ -207,7 +194,7 @@ class TestZwoEfwSDK(unittest.TestCase):
 
     def test_single_id_commands_forward_handle_id(self) -> None:
         efw_id = 4
-        cases = [
+        cases: list[tuple[str, Callable[[ZwoEfwSDK], Any]]] = [
             ("EFWOpen", lambda s: s.open(efw_id)),
             ("EFWClose", lambda s: s.close(efw_id)),
             ("EFWCalibrate", lambda s: s.calibrate(efw_id)),
@@ -263,7 +250,7 @@ class TestZwoEfwSDK(unittest.TestCase):
 
     def test_commands_raise_zwo_error_on_nonzero_return(self) -> None:
         expected_code = EFWErrorCode.EFW_ERROR_INVALID_ID
-        cases = [
+        cases: list[tuple[str, Callable[[ZwoEfwSDK], Any]]] = [
             ("EFWOpen", lambda s: s.open(0)),
             ("EFWClose", lambda s: s.close(0)),
             ("EFWSetPosition", lambda s: s.set_position(0, 1)),

@@ -99,6 +99,7 @@ The default test suite uses in-memory fakes and `FakeCDLL` and runs in CI withou
 PYZWO_EFWFILTER_LIB=/nonexistent/libEFWFilter.so python3 -m unittest discover -s tests -v
 uvx ruff check .
 uvx ruff format --check .
+uvx mypy pyzwo tests
 ```
 
 ### Opt-in C11 compiler ABI verification (when `pyzwo/_efw_sdk.py` or C headers change)
