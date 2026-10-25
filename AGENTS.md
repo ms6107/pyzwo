@@ -1,14 +1,14 @@
 # Agent Instructions: `pyzwo`
 
-`pyzwo` is a minimal, stateless, path-based Python interface to ZWO USB HID astronomy hardware using `hid` (`hidapi`).
+`pyzwo` is a minimal, path-based Python interface to ZWO USB HID astronomy hardware using `hid` (`hidapi`).
 
 ## Architectural Boundaries
-- **`pyzwo` scope:** Stateless path-based USB HID transport (`ZwoHid` in `pyzwo/hid.py`), device controllers (`Efw` and `EfwStatus` in `pyzwo/efw.py`), and `ZwoError`.
+- **`pyzwo` scope:** Path-based USB HID transport (`ZwoHid` in `pyzwo/hid.py`), device controllers (`Efw` and `EfwStatus` in `pyzwo/efw.py`), and `ZwoError` / `ZwoQueryCollisionError`.
 - **No proprietary vendor shared libraries:** Communicate directly via USB HID feature reports (`hid`). Do not add `pyobs`, `numpy`, or framework dependencies to `pyproject.toml`.
 - **1-based EFW slots:** Slot indices are `1..slot_count` (matching both physical wheel markings and the HID wire protocol), with `-1` indicating the wheel is currently moving.
 
 ## Concurrency & Deadlines
-- **Stateless per-command open/close:** Each `_send()` and `_query()` opens the HID device by path, performs the feature-report transaction, and closes it immediately.
+- **Persistent handle & serialized lifecycle:** `ZwoHid(path)` opens the `hid.Device` on construction and holds it open until `close()` (or context-manager exit), serializing `discover()`, `__init__()`, and `close()` with a module-level lock per `hidapi` thread-safety rules.
 - **Single-owner synchronous baseline:** Synchronous methods (`get_status`, `move_to_slot`) assume a single caller per physical wheel at a time. `move_to_slot` raises built-in `TimeoutError` if the wheel does not settle before `timeout`.
 
 ## Testing & Hardware Safety

@@ -96,7 +96,7 @@ class FakeHidBackend:
 
 
 class FakeHidDevice:
-    """Single short-lived HID device handle created by FakeHidBackend.Device."""
+    """HID device handle created by FakeHidBackend.Device."""
 
     def __init__(self, backend: FakeHidBackend, path: bytes) -> None:
         self._backend = backend
@@ -104,12 +104,16 @@ class FakeHidDevice:
         self.closed = False
 
     def send_feature_report(self, data: bytes) -> int:
+        if self.closed:
+            raise OSError("device closed")
         if self._backend.io_error is not None:
             raise self._backend.io_error
         self._backend.sent_reports.append(bytes(data))
         return len(data)
 
     def get_feature_report(self, report_id: int, size: int) -> bytes:
+        if self.closed:
+            raise OSError("device closed")
         if self._backend.io_error is not None:
             raise self._backend.io_error
         if len(self._backend.status_replies) > 1:
@@ -117,8 +121,9 @@ class FakeHidDevice:
         return self._backend.status_replies[0]
 
     def close(self) -> None:
-        self.closed = True
-        self._backend.close_count += 1
+        if not self.closed:
+            self.closed = True
+            self._backend.close_count += 1
 
 
 class TestEfw(unittest.TestCase):
@@ -128,7 +133,9 @@ class TestEfw(unittest.TestCase):
 
     def test_get_status_settled_and_closes_handle(self) -> None:
         with FakeHidBackend(status_replies=[_status_report(slots=(5, 5, 5))]) as backend:
-            status = Efw(DEV_PATH).get_status()
+            with Efw(DEV_PATH) as wheel:
+                status = wheel.get_status()
+            wheel.close()  # idempotent second close
 
         self.assertEqual(status, EfwStatus(slot_count=SLOT_COUNT, slot=5))
         self.assertEqual(backend.open_count, 1)
@@ -141,8 +148,8 @@ class TestEfw(unittest.TestCase):
             ("sensor_mismatch", _status_report(state=0x01, slots=(2, 3, 3))),
         ]
         for label, report in cases:
-            with self.subTest(case=label), FakeHidBackend(status_replies=[report]):
-                self.assertEqual(Efw(DEV_PATH).get_status(), EfwStatus(slot_count=SLOT_COUNT, slot=-1))
+            with self.subTest(case=label), FakeHidBackend(status_replies=[report]), Efw(DEV_PATH) as wheel:
+                self.assertEqual(wheel.get_status(), EfwStatus(slot_count=SLOT_COUNT, slot=-1))
 
     def test_get_status_protocol_and_hardware_errors_raise_zwo_error(self) -> None:
         cases = [
@@ -154,15 +161,17 @@ class TestEfw(unittest.TestCase):
         ]
         for label, report in cases:
             with self.subTest(case=label), FakeHidBackend(status_replies=[report]) as backend:
-                with self.assertRaises(ZwoError):
-                    Efw(DEV_PATH).get_status()
-                self.assertEqual(backend.open_count, backend.close_count)
+                with self.assertRaises(ZwoError), Efw(DEV_PATH) as wheel:
+                    wheel.get_status()
+                self.assertEqual(backend.open_count, 1)
+                self.assertEqual(backend.close_count, 1)
 
     def test_query_retries_on_selector_collision(self) -> None:
         other_reply = b"\x01\x7e\x5a\x04".ljust(17, b"\x00")
         replies = [other_reply, other_reply, _status_report(slots=(4, 4, 4))]
         with FakeHidBackend(status_replies=replies) as backend:
-            self.assertEqual(Efw(DEV_PATH).get_status(), EfwStatus(slot_count=SLOT_COUNT, slot=4))
+            with Efw(DEV_PATH) as wheel:
+                self.assertEqual(wheel.get_status(), EfwStatus(slot_count=SLOT_COUNT, slot=4))
             self.assertEqual(len(backend.sent_reports), 3)
             self.assertEqual(backend.open_count, 1)
             self.assertEqual(backend.close_count, 1)
@@ -170,25 +179,30 @@ class TestEfw(unittest.TestCase):
     def test_query_raises_collision_error_after_exhausting_retries(self) -> None:
         other_reply = b"\x01\x7e\x5a\x04".ljust(17, b"\x00")
         with FakeHidBackend(status_replies=[other_reply]) as backend:
-            with self.assertRaises(ZwoQueryCollisionError):
-                Efw(DEV_PATH).get_status()
+            with self.assertRaises(ZwoQueryCollisionError), Efw(DEV_PATH) as wheel:
+                wheel.get_status()
             self.assertEqual(len(backend.sent_reports), 3)
             self.assertEqual(backend.open_count, 1)
             self.assertEqual(backend.close_count, 1)
 
     def test_hid_open_and_io_exceptions_wrap_into_zwo_error(self) -> None:
         with FakeHidBackend(open_error=OSError("permission denied")), self.assertRaises(ZwoError):
-            Efw(DEV_PATH).get_status()
+            Efw(DEV_PATH)
 
         with FakeHidBackend(io_error=OSError("input/output error")) as io_backend:
-            with self.assertRaises(ZwoError):
-                Efw(DEV_PATH).get_status()
+            with self.assertRaises(ZwoError), Efw(DEV_PATH) as wheel:
+                wheel.get_status()
             self.assertEqual(io_backend.open_count, 1)
             self.assertEqual(io_backend.close_count, 1)
 
+        with FakeHidBackend():
+            closed_wheel = Efw(DEV_PATH)
+            closed_wheel.close()
+            with self.assertRaises(ZwoError):
+                closed_wheel.get_status()
+
     def test_move_to_slot_validates_arguments(self) -> None:
-        wheel = Efw(DEV_PATH)
-        with FakeHidBackend(status_replies=[_status_report(slots=(1, 1, 1))]):
+        with FakeHidBackend(status_replies=[_status_report(slots=(1, 1, 1))]), Efw(DEV_PATH) as wheel:
             for bad_timeout in (0.0, -1.0, math.nan, math.inf):
                 with self.subTest(timeout=bad_timeout), self.assertRaises(ValueError):
                     wheel.move_to_slot(1, timeout=bad_timeout)
@@ -199,8 +213,8 @@ class TestEfw(unittest.TestCase):
 
     def test_move_to_slot_rejects_when_already_moving(self) -> None:
         with FakeHidBackend(status_replies=[_status_report(state=0x00, slots=(0, 0, 0))]) as backend:
-            with self.assertRaises(ZwoError):
-                Efw(DEV_PATH).move_to_slot(2)
+            with self.assertRaises(ZwoError), Efw(DEV_PATH) as wheel:
+                wheel.move_to_slot(2)
             self.assertEqual(len(backend.sent_reports), 1)
 
     def test_move_to_slot_bidirectional_and_unidirectional(self) -> None:
@@ -211,15 +225,20 @@ class TestEfw(unittest.TestCase):
                     _status_report(state=0x00, slots=(0, 0, 0)),
                     _status_report(slots=(6, 6, 6)),
                 ]
-                with FakeHidBackend(status_replies=replies) as backend, patch("pyzwo.efw.time.sleep"):
-                    settled = Efw(DEV_PATH).move_to_slot(6, unidirectional=unidirectional)
+                with (
+                    FakeHidBackend(status_replies=replies) as backend,
+                    patch("pyzwo.efw.time.sleep"),
+                    Efw(DEV_PATH) as wheel,
+                ):
+                    settled = wheel.move_to_slot(6, unidirectional=unidirectional)
 
                 self.assertEqual(settled, 6)
                 self.assertEqual(
                     backend.sent_reports[1],
                     bytes((0x03, 0x7E, 0x5A, 0x01, expected_dir, 6)).ljust(16, b"\x00"),
                 )
-                self.assertEqual(backend.open_count, backend.close_count)
+                self.assertEqual(backend.open_count, 1)
+                self.assertEqual(backend.close_count, 1)
 
     def test_move_to_slot_timeout_raises_builtin_timeout_error(self) -> None:
         replies = [
@@ -231,8 +250,9 @@ class TestEfw(unittest.TestCase):
             patch("pyzwo.efw.time.sleep"),
             patch("pyzwo.efw.time.monotonic", side_effect=[0.0, 1.0]),
             self.assertRaises(TimeoutError),
+            Efw(DEV_PATH) as wheel,
         ):
-            Efw(DEV_PATH).move_to_slot(4, timeout=0.5)
+            wheel.move_to_slot(4, timeout=0.5)
 
 
 if __name__ == "__main__":

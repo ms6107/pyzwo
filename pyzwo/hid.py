@@ -3,7 +3,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Stateless path-based USB HID transport for ZWO astronomy devices.
+"""Path-based USB HID transport for ZWO astronomy devices.
 
 ZWO USB HID devices communicate via HID Feature Reports over USB Control
 Endpoint 0 using a shared `7e 5a` (`"~Z"`) framing protocol:
@@ -16,9 +16,8 @@ Endpoint 0 using a shared `7e 5a` (`"~Z"`) framing protocol:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-from typing import Any
+import threading
+from typing import Any, Self
 
 _CMD_HEADER = b"\x03\x7e\x5a"
 _CMD_LEN = 16
@@ -27,6 +26,11 @@ _REPLY_REPORT_ID = 0x01
 _REPLY_HEADER = b"\x01\x7e\x5a"
 _REPLY_LEN = 17
 _QUERY_ATTEMPTS = 3
+
+# hidapi's hid_init, hid_enumerate, hid_open_path, and hid_close share unsynchronized
+# process-global state (such as last_global_error_str and setlocale) and must not be
+# called concurrently across threads even for different devices.
+_LIFECYCLE_LOCK = threading.Lock()
 
 
 class ZwoError(Exception):
@@ -44,23 +48,14 @@ def _get_hid() -> Any:
     return hid
 
 
-@contextmanager
-def _open_hid(path: bytes) -> Iterator[Any]:
-    try:
-        device = _get_hid().Device(path=path)
-        try:
-            yield device
-        finally:
-            device.close()
-    except Exception as exc:
-        raise ZwoError(f"HID I/O failed on {path!r}: {exc}") from exc
-
-
 class ZwoHid:
-    """Stateless path-based base class for ZWO USB HID devices (`03 7e 5a` framing).
+    """Path-based base class for ZWO USB HID devices (`03 7e 5a` framing).
 
-    Each `_send()` or `_query()` opens the OS HID device node by path, performs
-    the feature-report transaction, and closes the handle immediately.
+    Opens the OS HID device node on construction and holds the handle open across
+    `_send()` and `_query()` calls until `close()` (or context-manager exit).
+    Holding the handle open avoids the ~45-50 ms Linux `hidraw` first-open /
+    last-close penalty (`hid_hw_open` / `usb_kill_urb` on the interrupt URB) and
+    keeps per-device I/O off `hidapi`'s thread-unsafe open/close path.
     """
 
     VID = 0x03C3
@@ -68,28 +63,47 @@ class ZwoHid:
 
     def __init__(self, path: str) -> None:
         self.path = path
-        self._raw_path = path.encode("utf-8")
+        raw_path = path.encode("utf-8")
+        try:
+            with _LIFECYCLE_LOCK:
+                self._device: Any = _get_hid().Device(path=raw_path)
+        except Exception as exc:
+            raise ZwoError(f"HID open failed on {path!r}: {exc}") from exc
+
+    def close(self) -> None:
+        """Close the underlying HID device handle."""
+        with _LIFECYCLE_LOCK:
+            self._device.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     @classmethod
     def discover(cls) -> list[str]:
         """Return sorted HID device paths matching `cls.VID` and `cls.PIDS`."""
         backend = _get_hid()
-        return sorted(
-            {
-                info["path"].decode("utf-8", errors="replace")
-                for pid in cls.PIDS
-                for info in backend.enumerate(cls.VID, pid)
-            }
-        )
+        with _LIFECYCLE_LOCK:
+            return sorted(
+                {
+                    info["path"].decode("utf-8", errors="replace")
+                    for pid in cls.PIDS
+                    for info in backend.enumerate(cls.VID, pid)
+                }
+            )
 
     def _send(self, payload: bytes) -> None:
-        """Open device, send a 16-byte `[03 7e 5a <payload>...]` feature report, and close."""
+        """Send a 16-byte `[03 7e 5a <payload>...]` feature report."""
         report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
-        with _open_hid(self._raw_path) as device:
-            device.send_feature_report(report)
+        try:
+            self._device.send_feature_report(report)
+        except Exception as exc:
+            raise ZwoError(f"HID I/O failed on {self.path!r}: {exc}") from exc
 
     def _query(self, payload: bytes) -> bytes:
-        """Open device, send `[03 7e 5a <payload>...]`, read 17-byte `[01 7e 5a <selector>...]` reply, and close.
+        """Send `[03 7e 5a <payload>...]` and read its 17-byte `[01 7e 5a <selector>...]` reply.
 
         `send_feature_report` (`SET_REPORT`) is a synchronous USB Control Transfer (~3 ms)
         that populates the MCU's single 17-byte `0x01` reply register in RAM before
@@ -104,14 +118,16 @@ class ZwoHid:
         Linux `hidraw` only so far; macOS/Windows HID backends are untested.)
         """
         report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
-        with _open_hid(self._raw_path) as device:
-            for _ in range(_QUERY_ATTEMPTS):
-                device.send_feature_report(report)
-                reply = bytes(device.get_feature_report(_REPLY_REPORT_ID, _REPLY_LEN))
-                if not reply.startswith(_REPLY_HEADER):
-                    raise ZwoError(f"Unexpected HID reply for {payload.hex(' ')}: {reply.hex(' ')}")
-                # Every query echoes its selector (payload[-1]) in reply[3]; a mismatch means
-                # a concurrent query overwrote the MCU's single reply buffer before our read.
-                if reply[3] == payload[-1]:
-                    return reply
+        for _ in range(_QUERY_ATTEMPTS):
+            try:
+                self._device.send_feature_report(report)
+                reply = bytes(self._device.get_feature_report(_REPLY_REPORT_ID, _REPLY_LEN))
+            except Exception as exc:
+                raise ZwoError(f"HID I/O failed on {self.path!r}: {exc}") from exc
+            if not reply.startswith(_REPLY_HEADER):
+                raise ZwoError(f"Unexpected HID reply for {payload.hex(' ')}: {reply.hex(' ')}")
+            # Every query echoes its selector (payload[-1]) in reply[3]; a mismatch means
+            # a concurrent query overwrote the MCU's single reply buffer before our read.
+            if reply[3] == payload[-1]:
+                return reply
         raise ZwoQueryCollisionError(f"HID query collision for {payload.hex(' ')}: {reply.hex(' ')}")

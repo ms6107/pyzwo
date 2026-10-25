@@ -19,12 +19,12 @@ Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWF
 > **Note:** This is an initial USB HID implementation—the public API is **not yet stable** and will change as async execution and additional device classes are introduced.
 
 Key behaviors in the synchronous EFW controller (`Efw`):
-- **Stateless, path-addressed operations:** `Efw(path)` is initialized with a device path (discovered via `Efw.discover()` or a persistent `udev` symlink). Each `get_status()` or `move_to_slot()` command opens the HID device node, performs the feature-report transaction, and closes the handle immediately—eliminating stale handles and sticky fault state machines.
+- **Path-addressed, valid-by-construction handle:** `Efw(path)` opens the OS HID device node (discovered via `Efw.discover()` or a persistent `udev` symlink) on construction and holds the handle open until `close()` (or context-manager exit), avoiding the ~50 ms Linux `hidraw` open/close overhead and keeping per-device I/O off `hidapi`'s thread-unsafe open/close path.
 - **1-based slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `-1` indicating the wheel is currently in motion.
 
 ## Concurrency, Deadlines & Limitations
 
-- **Single-owner, single-thread contract:** `Efw` is synchronous and designed for a single owner per physical wheel at a time. This baseline makes **no promise of thread safety** across concurrent callers or separate OS processes accessing the same USB device simultaneously.
+- **Single-owner per device:** `Efw` is synchronous and designed for a single owner per physical wheel at a time. `discover()`, `__init__()`, and `close()` are serialized across threads with a module-level lock because `hidapi`'s `hid_enumerate`, `hid_open_path`, and `hid_close` share unsynchronized global state; once opened, separate `ZwoHid` instances for different physical devices can perform I/O in separate threads.
 - **Polling deadlines vs. blocking USB I/O:** The `timeout` argument on `move_to_slot()` is a **Python-level monotonic polling deadline** checked between status queries, raising built-in `TimeoutError` if the wheel does not settle in time. Individual synchronous `hidapi` calls have no pre-emptive timeout if the kernel or USB stack blocks.
 
 ## Device classes & roadmap
@@ -72,11 +72,10 @@ After adding a user to the `zwo` group, log out and log back in (or restart the 
 from pyzwo import Efw
 
 paths = Efw.discover()
-wheel = Efw(paths[0])
-
-status = wheel.get_status()  # EfwStatus(slot_count=7, slot=1)
-settled_slot = wheel.move_to_slot(2, unidirectional=False, timeout=30.0)
-print(f"Settled at slot {settled_slot}")
+with Efw(paths[0]) as wheel:
+    status = wheel.get_status()  # EfwStatus(slot_count=7, slot=1)
+    settled_slot = wheel.move_to_slot(2, unidirectional=False, timeout=30.0)
+    print(f"Settled at slot {settled_slot}")
 ```
 
 ## Running tests

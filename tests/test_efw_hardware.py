@@ -33,8 +33,8 @@ class TestEfwHardware(unittest.TestCase):
 
     def test_hardware_readonly_status(self) -> None:
         for path in self.paths:
-            with self.subTest(path=path):
-                status = Efw(path).get_status()
+            with self.subTest(path=path), Efw(path) as wheel:
+                status = wheel.get_status()
                 self.assertTrue(1 <= status.slot_count <= 16)
                 self.assertTrue(1 <= status.slot <= status.slot_count)
 
@@ -44,8 +44,7 @@ class TestEfwHardware(unittest.TestCase):
     )
     def test_hardware_move_next_slot_and_back(self) -> None:
         for path in self.paths:
-            with self.subTest(path=path):
-                wheel = Efw(path)
+            with self.subTest(path=path), Efw(path) as wheel:
                 status = wheel.get_status()
                 self.assertGreater(status.slot_count, 1)
                 start_slot = status.slot

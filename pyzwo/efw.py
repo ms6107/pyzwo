@@ -3,7 +3,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Stateless path-based controller for ZWO Electronic Filter Wheels (EFW)."""
+"""Path-based controller for ZWO Electronic Filter Wheels (EFW)."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class EfwStatus:
 
 
 class Efw(ZwoHid):
-    """Stateless synchronous ZWO EFW controller."""
+    """Synchronous ZWO EFW controller."""
 
     PIDS = (0x1F01, 0x1F02)
 
