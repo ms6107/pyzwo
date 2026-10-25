@@ -13,7 +13,7 @@ import unittest
 from types import TracebackType
 from unittest.mock import patch
 
-from pyzwo import Efw, EfwStatus, ZwoError
+from pyzwo import Efw, EfwStatus, ZwoError, ZwoQueryCollisionError
 
 DEV_PATH = "/dev/hidraw10"
 SLOT_COUNT = 7
@@ -147,7 +147,6 @@ class TestEfw(unittest.TestCase):
     def test_get_status_protocol_and_hardware_errors_raise_zwo_error(self) -> None:
         cases = [
             ("bad_header", bytes(17)),
-            ("bad_reply_type", b"\x01\x7e\x5a\x02".ljust(17, b"\x00")),
             ("dual_disc", _status_report(dual_disc=1)),
             ("hw_error", _status_report(state=0x06, error_code=2)),
             ("zero_slots", _status_report(slot_count=0)),
@@ -158,6 +157,24 @@ class TestEfw(unittest.TestCase):
                 with self.assertRaises(ZwoError):
                     Efw(DEV_PATH).get_status()
                 self.assertEqual(backend.open_count, backend.close_count)
+
+    def test_query_retries_on_selector_collision(self) -> None:
+        other_reply = b"\x01\x7e\x5a\x04".ljust(17, b"\x00")
+        replies = [other_reply, other_reply, _status_report(slots=(4, 4, 4))]
+        with FakeHidBackend(status_replies=replies) as backend:
+            self.assertEqual(Efw(DEV_PATH).get_status(), EfwStatus(slot_count=SLOT_COUNT, slot=4))
+            self.assertEqual(len(backend.sent_reports), 3)
+            self.assertEqual(backend.open_count, 1)
+            self.assertEqual(backend.close_count, 1)
+
+    def test_query_raises_collision_error_after_exhausting_retries(self) -> None:
+        other_reply = b"\x01\x7e\x5a\x04".ljust(17, b"\x00")
+        with FakeHidBackend(status_replies=[other_reply]) as backend:
+            with self.assertRaises(ZwoQueryCollisionError):
+                Efw(DEV_PATH).get_status()
+            self.assertEqual(len(backend.sent_reports), 3)
+            self.assertEqual(backend.open_count, 1)
+            self.assertEqual(backend.close_count, 1)
 
     def test_hid_open_and_io_exceptions_wrap_into_zwo_error(self) -> None:
         with FakeHidBackend(open_error=OSError("permission denied")), self.assertRaises(ZwoError):
