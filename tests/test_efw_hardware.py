@@ -22,7 +22,7 @@ class TestEfwHardware(unittest.TestCase):
 
     - ``test_hardware_readonly_status`` is read-only and queries ``get_status()``.
     - ``test_hardware_move_next_slot_and_back`` physically moves the wheel to
-      ``(slot % slot_num) + 1`` and back, and requires explicit operator confirmation
+      ``(slot % slot_count) + 1`` and back, and requires explicit operator confirmation
       via ``PYZWO_RUN_HARDWARE_MOTION_TESTS=1``.
     """
 
@@ -35,8 +35,8 @@ class TestEfwHardware(unittest.TestCase):
         for path in self.paths:
             with self.subTest(path=path):
                 status = Efw(path).get_status()
-                self.assertTrue(1 <= status.slot_num <= 16)
-                self.assertTrue(1 <= status.slot <= status.slot_num)
+                self.assertTrue(1 <= status.slot_count <= 16)
+                self.assertTrue(1 <= status.slot <= status.slot_count)
 
     @unittest.skipUnless(
         os.environ.get("PYZWO_RUN_HARDWARE_MOTION_TESTS") == "1",
@@ -47,10 +47,10 @@ class TestEfwHardware(unittest.TestCase):
             with self.subTest(path=path):
                 wheel = Efw(path)
                 status = wheel.get_status()
-                self.assertGreater(status.slot_num, 1)
+                self.assertGreater(status.slot_count, 1)
                 start_slot = status.slot
-                self.assertTrue(1 <= start_slot <= status.slot_num)
-                target_slot = (start_slot % status.slot_num) + 1
+                self.assertTrue(1 <= start_slot <= status.slot_count)
+                target_slot = (start_slot % status.slot_count) + 1
 
                 settled_next = wheel.move_to_slot(target_slot, timeout=30.0)
                 self.assertEqual(settled_next, target_slot)

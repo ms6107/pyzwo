@@ -11,7 +11,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-hid: Any = None
+_CMD_HEADER = b"\x03\x7e\x5a"
+_CMD_LEN = 16
+
+_REPLY_REPORT_ID = 0x01
+_REPLY_HEADER = b"\x01\x7e\x5a"
+_REPLY_LEN = 17
 
 
 class ZwoError(Exception):
@@ -19,28 +24,21 @@ class ZwoError(Exception):
 
 
 def _get_hid() -> Any:
-    global hid
-    if hid is None:
-        import hid as _hid  # type: ignore[import-untyped]
+    import hid  # type: ignore[import-untyped]
 
-        hid = _hid
     return hid
 
 
 @contextmanager
 def _open_hid(path: bytes) -> Iterator[Any]:
     try:
-        dev = _get_hid().Device(path=path)
-    except Exception as exc:
-        raise ZwoError(f"Failed to open HID device {path!r}: {exc}") from exc
-    try:
-        yield dev
-    except ZwoError:
-        raise
+        device = _get_hid().Device(path=path)
+        try:
+            yield device
+        finally:
+            device.close()
     except Exception as exc:
         raise ZwoError(f"HID I/O failed on {path!r}: {exc}") from exc
-    finally:
-        dev.close()
 
 
 class ZwoHid:
@@ -67,16 +65,16 @@ class ZwoHid:
 
     def _send(self, payload: bytes) -> None:
         """Open device, send a 16-byte [03 7e 5a <payload>...] feature report, and close."""
-        report = (b"\x03\x7e\x5a" + payload).ljust(16, b"\x00")
-        with _open_hid(self._raw_path) as dev:
-            dev.send_feature_report(report)
+        report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
+        with _open_hid(self._raw_path) as device:
+            device.send_feature_report(report)
 
-    def _query(self, selector: int) -> bytes:
-        """Open device, send [03 7e 5a 02 <selector>], read 17-byte [01 7e 5a <selector>...] reply, and close."""
-        cmd = (b"\x03\x7e\x5a\x02" + bytes((selector,))).ljust(16, b"\x00")
-        with _open_hid(self._raw_path) as dev:
-            dev.send_feature_report(cmd)
-            rx = bytes(dev.get_feature_report(0x01, 17))
-        if rx[:4] != b"\x01\x7e\x5a" + bytes((selector,)):
-            raise ZwoError(f"Unexpected HID reply for selector 0x{selector:02x}: {rx.hex(' ')}")
-        return rx
+    def _query(self, payload: bytes) -> bytes:
+        """Open device, send [03 7e 5a <payload>...], read 17-byte [01 7e 5a ...] reply, and close."""
+        report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
+        with _open_hid(self._raw_path) as device:
+            device.send_feature_report(report)
+            reply = bytes(device.get_feature_report(_REPLY_REPORT_ID, _REPLY_LEN))
+        if not reply.startswith(_REPLY_HEADER):
+            raise ZwoError(f"Unexpected HID reply for {payload.hex(' ')}: {reply.hex(' ')}")
+        return reply

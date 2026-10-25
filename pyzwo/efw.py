@@ -13,12 +13,26 @@ from dataclasses import dataclass
 
 from .hid import ZwoError, ZwoHid
 
+# Status query (02 01) and reply (01) decoding
+_CMD_GET_STATUS = b"\x02\x01"
+_REPLY_STATUS = 0x01
+_STATE_SETTLED = 0x01
+_STATE_ERROR = 0x06
+_DUAL_DISC_OFFSET = 12
+_MAX_SLOTS = 16
+
+# Move command (01 <dir> <slot>) and polling
+_CMD_MOVE = 0x01
+_DIR_BIDIRECTIONAL = 0x02
+_DIR_UNIDIRECTIONAL = 0x03
+_POLL_INTERVAL_S = 0.2
+
 
 @dataclass(frozen=True, slots=True)
 class EfwStatus:
     """Snapshot of EFW status from a single 0x01 status report."""
 
-    slot_num: int
+    slot_count: int
     slot: int
 
 
@@ -28,18 +42,21 @@ class Efw(ZwoHid):
     PIDS = (0x1F01, 0x1F02)
 
     def get_status(self) -> EfwStatus:
-        """Return EfwStatus(slot_num, slot), where slot is 1..slot_num or -1 while moving."""
-        rx = self._query(0x01)
-        if rx[12] != 0:
-            raise ZwoError(f"Dual-disc EFW format not supported: {rx.hex(' ')}")
-        if rx[4] == 0x06:
-            raise ZwoError(f"EFW hardware error (code={rx[5]}): {rx.hex(' ')}")
-        slot_num = rx[9]
-        if not (1 <= slot_num <= 16):
-            raise ZwoError(f"Invalid EFW slot_num={slot_num}: {rx.hex(' ')}")
-        if rx[4] == 0x01 and rx[6] == rx[7] == rx[8] and 1 <= rx[7] <= slot_num:
-            return EfwStatus(slot_num=slot_num, slot=rx[7])
-        return EfwStatus(slot_num=slot_num, slot=-1)
+        """Return EfwStatus(slot_count, slot), where slot is 1..slot_count or -1 while moving."""
+        reply = self._query(_CMD_GET_STATUS)
+        reply_type, state, error_code, *last_observed_slots, slot_count = reply[3:10]
+        if reply_type != _REPLY_STATUS:
+            raise ZwoError(f"Unexpected EFW status reply type 0x{reply_type:02x}: {reply.hex(' ')}")
+        if reply[_DUAL_DISC_OFFSET] != 0:
+            raise ZwoError(f"Dual-disc EFW format not supported: {reply.hex(' ')}")
+        if state == _STATE_ERROR:
+            raise ZwoError(f"EFW hardware error (code={error_code}): {reply.hex(' ')}")
+        if not (1 <= slot_count <= _MAX_SLOTS):
+            raise ZwoError(f"Invalid EFW slot_count={slot_count}: {reply.hex(' ')}")
+        slot = last_observed_slots[0]
+        if state == _STATE_SETTLED and len(set(last_observed_slots)) == 1 and 1 <= slot <= slot_count:
+            return EfwStatus(slot_count=slot_count, slot=slot)
+        return EfwStatus(slot_count=slot_count, slot=-1)
 
     def move_to_slot(
         self,
@@ -48,24 +65,24 @@ class Efw(ZwoHid):
         unidirectional: bool = False,
         timeout: float = 30.0,
     ) -> int:
-        """Move to 1-based slot (1..slot_num) and poll until settled. Returns settled slot."""
+        """Move to 1-based slot (1..slot_count) and poll until settled. Returns settled slot."""
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 
         status = self.get_status()
-        if not (1 <= slot <= status.slot_num):
-            raise ValueError(f"slot={slot} outside allowed range [1, {status.slot_num}]")
+        if not (1 <= slot <= status.slot_count):
+            raise ValueError(f"slot={slot} outside allowed range [1, {status.slot_count}]")
         if status.slot == -1:
             raise ZwoError("EFW is already moving (-1)")
 
-        dir_byte = 0x03 if unidirectional else 0x02
-        self._send(bytes((0x01, dir_byte, slot)))
+        direction = _DIR_UNIDIRECTIONAL if unidirectional else _DIR_BIDIRECTIONAL
+        self._send(bytes((_CMD_MOVE, direction, slot)))
 
         deadline = time.monotonic() + timeout
         while True:
-            time.sleep(0.2)
-            cur = self.get_status().slot
-            if cur != -1:
-                return cur
+            time.sleep(_POLL_INTERVAL_S)
+            current_slot = self.get_status().slot
+            if current_slot != -1:
+                return current_slot
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"move_to_slot({slot}) timed out after {timeout:.2f}s")

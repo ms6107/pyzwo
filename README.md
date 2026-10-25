@@ -20,7 +20,7 @@ Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWF
 
 Key behaviors in the synchronous EFW controller (`Efw`):
 - **Stateless, path-addressed operations:** `Efw(path)` is initialized with a device path (discovered via `Efw.discover()` or a persistent `udev` symlink). Each `get_status()` or `move_to_slot()` command opens the HID device node, performs the feature-report transaction, and closes the handle immediately—eliminating stale handles and sticky fault state machines.
-- **1-based slots:** Slot positions are 1-based (`1 .. slot_num`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `-1` indicating the wheel is currently in motion.
+- **1-based slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `-1` indicating the wheel is currently in motion.
 
 ## Concurrency, Deadlines & Limitations
 
@@ -32,7 +32,7 @@ Key behaviors in the synchronous EFW controller (`Efw`):
 - **EFW (Filter Wheels, USB HID `03c3:1f01` / `03c3:1f02`)** — **Implemented (synchronous baseline).**
   - [x] **ZWO EFW 7×2" (legacy revision, fw `3.0.6`, `03c3:1f01`)** — Verified on hardware (`openSUSE Tumbleweed x86_64`).
   - [ ] **ZWO EFW 7×2" II (USB Type-C revision, fw `3.5.2`, `03c3:1f01`)** — Untested with the new direct USB HID implementation.
-  - [ ] Other slot variants (`5×2"`, `7×36mm`, `8×1.25"`, `Mini`) — Untested on hardware (uses the same USB HID protocol and dynamic `slot_num` discovery).
+  - [ ] Other slot variants (`5×2"`, `7×36mm`, `8×1.25"`, `Mini`) — Untested on hardware (uses the same USB HID protocol and dynamic `slot_count` discovery).
 - **Asynchronous EFW execution** — **Planned next.**
 - **EAF (Focusers, USB HID)** — **Planned next.**
 - **ASI Cameras & AM Mounts** — **Planned.**
@@ -74,7 +74,7 @@ from pyzwo import Efw
 paths = Efw.discover()
 wheel = Efw(paths[0])
 
-status = wheel.get_status()  # EfwStatus(slot_num=7, slot=1)
+status = wheel.get_status()  # EfwStatus(slot_count=7, slot=1)
 settled_slot = wheel.move_to_slot(2, unidirectional=False, timeout=30.0)
 print(f"Settled at slot {settled_slot}")
 ```
@@ -96,11 +96,11 @@ uv run mypy pyzwo tests
 
 When `70-pyzwo.rules` and a physical ZWO EFW are installed locally:
 
-- **Read-only hardware test (`test_hardware_readonly_status`)** discovers connected wheels and verifies `get_status()` returns a settled 1-based slot `1 <= slot <= slot_num`:
+- **Read-only hardware test (`test_hardware_readonly_status`)** discovers connected wheels and verifies `get_status()` returns a settled 1-based slot `1 <= slot <= slot_count`:
   ```bash
   PYZWO_RUN_HARDWARE_TESTS=1 uv run python -m unittest discover -s tests -v
   ```
-- **Opt-in operational motion test (`test_hardware_move_next_slot_and_back`)** physically moves the wheel to `(slot % slot_num) + 1` and back to its starting slot, and requires explicit confirmation via `PYZWO_RUN_HARDWARE_MOTION_TESTS=1`:
+- **Opt-in operational motion test (`test_hardware_move_next_slot_and_back`)** physically moves the wheel to `(slot % slot_count) + 1` and back to its starting slot, and requires explicit confirmation via `PYZWO_RUN_HARDWARE_MOTION_TESTS=1`:
   ```bash
   PYZWO_RUN_HARDWARE_MOTION_TESTS=1 uv run python -m unittest discover -s tests -v
   ```
