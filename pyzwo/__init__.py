@@ -3,21 +3,16 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Zero-dependency pure-Python ctypes interface to official ZWO astronomy SDKs."""
+"""Pure-Python USB HID interface to ZWO astronomy hardware."""
 
 from __future__ import annotations
 
-from ._loader import DeviceState, ZwoError, ZwoTimeoutError, load_zwo_library
-from .efw import EFW, EFWErrorCode, EfwInfo, FilterWheel, ZwoEfwSDK
+from .efw import Efw, EfwStatus
+from .hid import ZwoError, ZwoHid
 
 __all__ = [
-    "DeviceState",
-    "EFW",
-    "EFWErrorCode",
-    "EfwInfo",
-    "FilterWheel",
-    "ZwoEfwSDK",
+    "Efw",
+    "EfwStatus",
     "ZwoError",
-    "ZwoTimeoutError",
-    "load_zwo_library",
+    "ZwoHid",
 ]

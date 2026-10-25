@@ -10,78 +10,55 @@ from __future__ import annotations
 import os
 import unittest
 
-from pyzwo import DeviceState, ZwoError
-from pyzwo.efw import EFW, EFWErrorCode
+from pyzwo import Efw
 
 
-def _efw_connected() -> bool:
-    try:
-        return EFW.get_num() > 0
-    except Exception:
-        return False
-
-
+@unittest.skipUnless(
+    os.environ.get("PYZWO_RUN_HARDWARE_TESTS") == "1" or os.environ.get("PYZWO_RUN_HARDWARE_MOTION_TESTS") == "1",
+    "Set PYZWO_RUN_HARDWARE_TESTS=1 to run real-hardware tests",
+)
 class TestEfwHardware(unittest.TestCase):
-    """Real-hardware tests (skipped in CI or when no ZWO EFW is attached).
+    """Real-hardware tests for ZWO EFW over USB HID.
 
-    - ``test_hardware_readonly_open_and_query`` is read-only and runs whenever a
-      physical ZWO EFW is connected.
+    - ``test_hardware_readonly_status`` is read-only and queries ``get_status()``.
     - ``test_hardware_move_next_slot_and_back`` physically moves the wheel to
-      ``(slot + 1) % slot_num`` and back, and requires explicit operator confirmation
+      ``(slot % slot_num) + 1`` and back, and requires explicit operator confirmation
       via ``PYZWO_RUN_HARDWARE_MOTION_TESTS=1``.
-
-    Warning: Do not run motion or USB unbind/rebind tests on equipment mounted on
-    an active telescope or in use during observations.
     """
 
     def setUp(self) -> None:
-        if not _efw_connected():
-            self.skipTest("No physical ZWO EFW connected via USB")
+        self.paths = Efw.discover()
+        if not self.paths:
+            self.skipTest("No physical ZWO EFW discovered via USB HID")
 
-    def test_hardware_readonly_open_and_query(self) -> None:
-        num_wheels = EFW.get_num()
-        self.assertGreater(num_wheels, 0)
-        for idx in range(num_wheels):
-            with self.subTest(device_index=idx):
-                with EFW.open(device_index=idx) as wheel:
-                    self.assertEqual(wheel.state, DeviceState.READY)
-                    dev_id = wheel.info.id
-                    self.assertGreater(wheel.info.slot_num, 0)
-                    slot = wheel.get_slot()
-                    self.assertTrue(
-                        0 <= slot < wheel.info.slot_num,
-                        f"Unexpected slot={slot} for slot_num={wheel.info.slot_num}",
-                    )
-                self.assertEqual(wheel.state, DeviceState.DISCONNECTED)
-                with self.assertRaises(ZwoError) as ctx_closed:
-                    EFW._get_sdk().get_position(dev_id)
-                self.assertEqual(ctx_closed.exception.code, EFWErrorCode.EFW_ERROR_CLOSED)
-                self.assertEqual(ctx_closed.exception.code_name, "EFW_ERROR_CLOSED")
+    def test_hardware_readonly_status(self) -> None:
+        for path in self.paths:
+            with self.subTest(path=path):
+                status = Efw(path).get_status()
+                self.assertTrue(1 <= status.slot_num <= 16)
+                self.assertTrue(1 <= status.slot <= status.slot_num)
 
     @unittest.skipUnless(
         os.environ.get("PYZWO_RUN_HARDWARE_MOTION_TESTS") == "1",
         "Set PYZWO_RUN_HARDWARE_MOTION_TESTS=1 to run physical filter wheel motion tests",
     )
     def test_hardware_move_next_slot_and_back(self) -> None:
-        num_wheels = EFW.get_num()
-        self.assertGreater(num_wheels, 0)
-        for idx in range(num_wheels):
-            with self.subTest(device_index=idx), EFW.open(device_index=idx) as wheel:
-                slot_num = wheel.info.slot_num
-                self.assertGreater(slot_num, 1)
-                start_slot = wheel.get_slot()
-                self.assertTrue(0 <= start_slot < slot_num)
-                target_slot = (start_slot + 1) % slot_num
+        for path in self.paths:
+            with self.subTest(path=path):
+                wheel = Efw(path)
+                status = wheel.get_status()
+                self.assertGreater(status.slot_num, 1)
+                start_slot = status.slot
+                self.assertTrue(1 <= start_slot <= status.slot_num)
+                target_slot = (start_slot % status.slot_num) + 1
 
-                settled_next, _ = wheel.move_to_slot(target_slot, timeout=30.0)
+                settled_next = wheel.move_to_slot(target_slot, timeout=30.0)
                 self.assertEqual(settled_next, target_slot)
-                self.assertEqual(wheel.get_slot(), target_slot)
-                self.assertEqual(wheel.state, DeviceState.READY)
+                self.assertEqual(wheel.get_status().slot, target_slot)
 
-                settled_back, _ = wheel.move_to_slot(start_slot, timeout=30.0)
+                settled_back = wheel.move_to_slot(start_slot, timeout=30.0)
                 self.assertEqual(settled_back, start_slot)
-                self.assertEqual(wheel.get_slot(), start_slot)
-                self.assertEqual(wheel.state, DeviceState.READY)
+                self.assertEqual(wheel.get_status().slot, start_slot)
 
 
 if __name__ == "__main__":

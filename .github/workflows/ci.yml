@@ -1,4 +1,4 @@
-name: CI (SDK-Independent Unit & Header Tests)
+name: CI
 
 on:
   push:
@@ -14,35 +14,17 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.0
       - name: Run ruff and mypy checks
         run: |
-          uvx ruff check .
-          uvx ruff format --check .
-          uvx mypy pyzwo tests
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run mypy pyzwo tests
 
   unit-tests:
     name: Unit Tests (Python 3.11)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-      - name: Run SDK-independent unit tests
-        # Note: Real-hardware tests (TestEfwHardware) and C11 ABI header probes
-        # (TestEfwCtypesHeader) skip automatically during default unit test runs.
-        env:
-          PYZWO_EFWFILTER_LIB: /nonexistent/libEFWFilter.so
-        run: python -m unittest discover -s tests -v
-
-  abi-header-check:
-    name: C11 Compiler ABI Header Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
         with:
           python-version: "3.11"
-      - name: Run C11 ABI header probe
-        env:
-          PYZWO_EFWFILTER_LIB: /nonexistent/libEFWFilter.so
-          PYZWO_RUN_ABI_TESTS: "1"
-        run: uv run --group abi python -m unittest tests.test_efw_sdk -v
+      - name: Run unit tests
+        run: uv run python -m unittest discover -s tests -v
