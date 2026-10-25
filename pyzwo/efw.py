@@ -43,27 +43,25 @@ class FilterWheel:
       and only writes ``unidirectional`` if explicitly passed. If any initialization step
       fails after ``EFWOpen(id)`` succeeds, ``open()`` rolls back via ``EFWClose(id)`` to
       prevent handle leaks (though hardware settings already written are not reverted).
-    - ``close()`` is idempotent when disconnected and clears ``self.info``. If
-      ``EFWClose`` fails, the handle remains retained and ``self.state`` becomes
-      ``DeviceState.UNKNOWN`` so ``close()`` can be retried.
-    - ``timeout`` parameters on ``open()``, ``move_to_slot()``, and ``calibrate()``
-      enforce Python-level monotonic polling deadlines between SDK calls. A blocked
-      native C call inside ``libEFWFilter`` has no pre-emptive timeout.
-    - Failed or timed-out movements/calibrations and ``EFW_ERROR_REMOVED`` disconnects
-      transition ``self.state`` to ``DeviceState.FAULT``. To recover, call ``close()``
-      and open a new ``FilterWheel`` via ``FilterWheel.open(...)``.
+    - ``close()`` is idempotent when disconnected. If ``EFWClose`` fails, the handle
+      remains retained and ``self.state`` becomes ``DeviceState.UNKNOWN`` so ``close()``
+      can be retried.
+    - ``timeout`` parameters on ``move_to_slot()`` and ``calibrate()`` enforce
+      Python-level monotonic polling deadlines between SDK calls. A blocked native C
+      call inside ``libEFWFilter`` has no pre-emptive timeout.
+    - ``EFW_ERROR_REMOVED`` disconnects transition ``self.state`` to
+      ``DeviceState.FAULT``. To recover, call ``close()`` and open a new
+      ``FilterWheel`` via ``FilterWheel.open(...)``.
     """
 
     def __init__(
         self,
-        device_index: int,
         efw_id: int,
         info: EfwInfo,
         sdk: EfwSDKProtocol,
     ) -> None:
-        self.device_index = device_index
-        self.efw_id: int | None = efw_id
-        self.info: EfwInfo | None = info
+        self.efw_id: int = efw_id
+        self.info: EfwInfo = info
         self.sdk = sdk
         self.state: DeviceState = DeviceState.READY
 
@@ -77,11 +75,8 @@ class FilterWheel:
     def open(
         device_index: int = 0,
         unidirectional: bool | None = None,
-        timeout: float = 15.0,
-        poll_interval: float = 0.1,
         sdk: EfwSDKProtocol | None = None,
     ) -> FilterWheel:
-        validate_poll_and_timeout(poll_interval, timeout)
         if device_index < 0:
             raise ZwoError(
                 f"EFWGetNum(index={device_index})",
@@ -104,38 +99,20 @@ class FilterWheel:
                 active_sdk.set_direction(efw_id, unidirectional)
             unidir = active_sdk.get_direction(efw_id)
 
-            deadline = time.monotonic() + timeout
-            dev_name = ""
-            slot_num = 0
-            while True:
-                try:
-                    _, dev_name, slot_num = active_sdk.get_property(efw_id)
-                    if slot_num > 0:
-                        pos = active_sdk.get_position(efw_id)
-                        if pos != -1:
-                            if pos < 0 or pos >= slot_num:
-                                raise ZwoError(
-                                    f"EFWGetPosition({efw_id}) reported invalid slot {pos} during open",
-                                    EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                                    "EFW_ERROR_ERROR_STATE",
-                                )
-                            break
-                        if time.monotonic() >= deadline:
-                            raise ZwoTimeoutError(
-                                f"EFWGetPosition({efw_id}) timed out after {timeout:.2f}s while wheel moving (-1)"
-                            )
-                    elif time.monotonic() >= deadline:
-                        raise ZwoTimeoutError(
-                            f"EFWGetProperty({efw_id}) timed out after {timeout:.2f}s with slot_num={slot_num}"
-                        )
-                except ZwoError as e:
-                    if e.code != EFWErrorCode.EFW_ERROR_MOVING:
-                        raise
-                    if time.monotonic() >= deadline:
-                        raise ZwoTimeoutError(
-                            f"EFWGetProperty({efw_id}) timed out after {timeout:.2f}s while wheel moving"
-                        ) from e
-                time.sleep(poll_interval)
+            _, dev_name, slot_num = active_sdk.get_property(efw_id)
+            if slot_num <= 0:
+                raise ZwoError(
+                    f"EFWGetProperty({efw_id}) reported invalid slot_num={slot_num} during open",
+                    EFWErrorCode.EFW_ERROR_ERROR_STATE,
+                    "EFW_ERROR_ERROR_STATE",
+                )
+            pos = active_sdk.get_position(efw_id)
+            if pos == -1:
+                raise ZwoError(
+                    f"EFWGetPosition({efw_id}) reported wheel moving (-1) during open",
+                    EFWErrorCode.EFW_ERROR_MOVING,
+                    "EFW_ERROR_MOVING",
+                )
 
             fw = active_sdk.get_firmware_version(efw_id)
             info = EfwInfo(
@@ -145,7 +122,7 @@ class FilterWheel:
                 firmware_version=fw,
                 unidirectional=unidir,
             )
-            return FilterWheel(device_index=device_index, efw_id=efw_id, info=info, sdk=active_sdk)
+            return FilterWheel(efw_id=efw_id, info=info, sdk=active_sdk)
         except BaseException as init_exc:
             try:
                 active_sdk.close(efw_id)
@@ -154,18 +131,13 @@ class FilterWheel:
             raise
 
     def close(self) -> None:
-        self.info = None
-        if self.efw_id is None:
-            self.state = DeviceState.DISCONNECTED
+        if self.state == DeviceState.DISCONNECTED:
             return
-        efw_id = self.efw_id
         try:
-            self.sdk.close(efw_id)
+            self.sdk.close(self.efw_id)
         except BaseException:
             self.state = DeviceState.UNKNOWN
             raise
-
-        self.efw_id = None
         self.state = DeviceState.DISCONNECTED
 
     def __enter__(self) -> FilterWheel:
@@ -187,15 +159,12 @@ class FilterWheel:
                 EFWErrorCode.EFW_ERROR_ERROR_STATE,
                 "EFW_ERROR_ERROR_STATE",
             )
-        if self.efw_id is None or self.state == DeviceState.DISCONNECTED:
+        if self.state == DeviceState.DISCONNECTED:
             raise ZwoError("FilterWheel", EFWErrorCode.EFW_ERROR_CLOSED, "EFW_ERROR_CLOSED")
         return self.efw_id
 
     def _record_op_error(self, exc: BaseException) -> None:
         if isinstance(exc, ZwoError) and exc.code == EFWErrorCode.EFW_ERROR_REMOVED:
-            self.info = None
-            self.state = DeviceState.FAULT
-        elif self.state == DeviceState.BUSY:
             self.state = DeviceState.FAULT
 
     def get_slot(self) -> int:
@@ -216,14 +185,11 @@ class FilterWheel:
         """Move to 0-based SDK slot and wait until settled. Returns ``(settled_slot, moving_polls)``."""
         validate_poll_and_timeout(poll_interval, timeout)
         efw_id = self._require_id()
-        if self.state == DeviceState.BUSY:
-            raise ZwoError("FilterWheel is busy", EFWErrorCode.EFW_ERROR_MOVING, "EFW_ERROR_MOVING")
 
-        slot_num = self.info.slot_num if self.info is not None else 0
-        if slot < 0 or (slot_num > 0 and slot >= slot_num):
-            upper = slot_num - 1 if slot_num > 0 else "?"
+        slot_num = self.info.slot_num
+        if slot < 0 or slot >= slot_num:
             raise ZwoError(
-                f"EFWSetPosition({efw_id}, {slot}) outside allowed range [0, {upper}]",
+                f"EFWSetPosition({efw_id}, {slot}) outside allowed range [0, {slot_num - 1}]",
                 EFWErrorCode.EFW_ERROR_INVALID_VALUE,
                 "EFW_ERROR_INVALID_VALUE",
             )
@@ -237,12 +203,6 @@ class FilterWheel:
                     EFWErrorCode.EFW_ERROR_MOVING,
                     "EFW_ERROR_MOVING",
                 )
-            if cur < 0 or (slot_num > 0 and cur >= slot_num):
-                raise ZwoError(
-                    f"EFWGetPosition({efw_id}) reported invalid slot {cur}",
-                    EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                    "EFW_ERROR_ERROR_STATE",
-                )
             if cur == slot:
                 self.state = DeviceState.READY
                 return (slot, 0)
@@ -250,23 +210,12 @@ class FilterWheel:
             deadline = time.monotonic() + timeout
             self.sdk.set_position(efw_id, slot)
             moving_polls = 0
-            wrong_settled_polls = 0
             while True:
                 pos = self.sdk.get_position(efw_id)
-                if pos == -1:
-                    moving_polls += 1
-                    wrong_settled_polls = 0
-                elif pos == slot:
+                if pos != -1:
                     self.state = DeviceState.READY
                     return (pos, moving_polls)
-                else:
-                    wrong_settled_polls += 1
-                    if moving_polls > 0 or wrong_settled_polls >= 2:
-                        raise ZwoError(
-                            f"EFWSetPosition({efw_id}, {slot}) settled at wrong slot {pos}",
-                            EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                            "EFW_ERROR_ERROR_STATE",
-                        )
+                moving_polls += 1
                 if time.monotonic() >= deadline:
                     raise ZwoTimeoutError(
                         f"EFWSetPosition({efw_id}, {slot}) timed out after {timeout:.2f}s "
@@ -285,37 +234,17 @@ class FilterWheel:
         """Run full hardware calibration (``EFWCalibrate``) and wait until settled."""
         validate_poll_and_timeout(poll_interval, timeout)
         efw_id = self._require_id()
-        if self.state == DeviceState.BUSY:
-            raise ZwoError("FilterWheel is busy", EFWErrorCode.EFW_ERROR_MOVING, "EFW_ERROR_MOVING")
-        slot_num = self.info.slot_num if self.info is not None else 0
         self.state = DeviceState.BUSY
         try:
             deadline = time.monotonic() + timeout
             self.sdk.calibrate(efw_id)
             moving_polls = 0
-            settled_polls = 0
-            last_settled_pos: int | None = None
             while True:
                 pos = self.sdk.get_position(efw_id)
-                if pos == -1:
-                    moving_polls += 1
-                    settled_polls = 0
-                    last_settled_pos = None
-                elif pos < 0 or (slot_num > 0 and pos >= slot_num):
-                    raise ZwoError(
-                        f"EFWCalibrate({efw_id}) reported invalid settled slot {pos}",
-                        EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                        "EFW_ERROR_ERROR_STATE",
-                    )
-                else:
-                    if pos == last_settled_pos:
-                        settled_polls += 1
-                    else:
-                        last_settled_pos = pos
-                        settled_polls = 1
-                    if settled_polls >= 2:
-                        self.state = DeviceState.READY
-                        return (pos, moving_polls)
+                if pos != -1:
+                    self.state = DeviceState.READY
+                    return (pos, moving_polls)
+                moving_polls += 1
                 if time.monotonic() >= deadline:
                     raise ZwoTimeoutError(
                         f"EFWCalibrate({efw_id}) timed out after {timeout:.2f}s "

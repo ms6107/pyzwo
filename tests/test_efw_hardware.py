@@ -45,8 +45,6 @@ class TestEfwHardware(unittest.TestCase):
             with self.subTest(device_index=idx):
                 with EFW.open(device_index=idx) as wheel:
                     self.assertEqual(wheel.state, DeviceState.READY)
-                    self.assertIsNotNone(wheel.info)
-                    assert wheel.info is not None
                     dev_id = wheel.info.id
                     self.assertGreater(wheel.info.slot_num, 0)
                     slot = wheel.get_slot()
@@ -55,7 +53,6 @@ class TestEfwHardware(unittest.TestCase):
                         f"Unexpected slot={slot} for slot_num={wheel.info.slot_num}",
                     )
                 self.assertEqual(wheel.state, DeviceState.DISCONNECTED)
-                self.assertIsNone(wheel.info)
                 with self.assertRaises(ZwoError) as ctx_closed:
                     wheel.sdk.get_position(dev_id)
                 self.assertEqual(ctx_closed.exception.code, EFWErrorCode.EFW_ERROR_CLOSED)
@@ -70,8 +67,6 @@ class TestEfwHardware(unittest.TestCase):
         self.assertGreater(num_wheels, 0)
         for idx in range(num_wheels):
             with self.subTest(device_index=idx), EFW.open(device_index=idx) as wheel:
-                self.assertIsNotNone(wheel.info)
-                assert wheel.info is not None
                 slot_num = wheel.info.slot_num
                 self.assertGreater(slot_num, 1)
                 start_slot = wheel.get_slot()

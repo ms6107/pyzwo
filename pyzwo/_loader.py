@@ -23,7 +23,6 @@ class DeviceState(StrEnum):
     """Lifecycle and connection state of a synchronous ZWO controller."""
 
     DISCONNECTED = "disconnected"
-    CONNECTING = "connecting"
     READY = "ready"
     BUSY = "busy"
     FAULT = "fault"
@@ -38,17 +37,12 @@ class ZwoError(RuntimeError):
         operation: str,
         code: int,
         code_name: str,
-        *,
-        rollback_error: BaseException | None = None,
     ) -> None:
         self.operation = operation
         self.code = code
         self.code_name = code_name
-        self.rollback_error = rollback_error
-        msg = f"{operation} failed with {code_name} (rc={code})"
-        if rollback_error is not None:
-            msg = f"{msg}; rollback close also failed: {rollback_error}"
-        super().__init__(msg)
+        self.rollback_error: BaseException | None = None
+        super().__init__(f"{operation} failed with {code_name} (rc={code})")
 
 
 def attach_rollback_error(init_exc: BaseException, dev_id: int, close_exc: BaseException) -> None:
@@ -57,24 +51,14 @@ def attach_rollback_error(init_exc: BaseException, dev_id: int, close_exc: BaseE
     init_exc.add_note(note)
     if isinstance(init_exc, (ZwoError, ZwoTimeoutError)):
         init_exc.rollback_error = close_exc
-    if init_exc.args:
-        first = str(init_exc.args[0])
-        init_exc.args = (f"{first}; {note}", *init_exc.args[1:])
-    else:
-        init_exc.args = (note,)
-
-
-def validate_timeout(timeout: float) -> None:
-    """Validate that timeout is a positive finite number."""
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 
 
 def validate_poll_and_timeout(poll_interval: float, timeout: float) -> None:
     """Validate that poll_interval and timeout are positive finite numbers."""
     if not math.isfinite(poll_interval) or poll_interval <= 0:
         raise ValueError(f"poll_interval must be a positive finite number, got {poll_interval!r}")
-    validate_timeout(timeout)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 
 
 class ZwoTimeoutError(TimeoutError):
