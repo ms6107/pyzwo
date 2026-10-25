@@ -37,6 +37,8 @@ class FilterWheel:
     Usage contract, deadlines & recovery semantics:
     - Single-owner, single-thread only. Concurrent calls across threads or simultaneous
       direct ``ZwoEfwSDK`` and ``FilterWheel`` calls on the same device are unsupported.
+    - ``FilterWheel.get_num()`` scans connected USB devices and populates the vendor
+      SDK's internal device table; call it before ``FilterWheel.open(...)``.
     - ``FilterWheel.open(...)`` is a static factory that returns a healthy ``FilterWheel``
       in ``DeviceState.READY`` or raises an exception. It is non-destructive by default
       and only writes ``unidirectional`` if explicitly passed. If any initialization step
@@ -53,42 +55,34 @@ class FilterWheel:
       ``FilterWheel`` via ``FilterWheel.open(...)``.
     """
 
-    def __init__(
-        self,
-        info: EfwInfo,
-        sdk: EfwSDKProtocol,
-    ) -> None:
+    sdk: EfwSDKProtocol | None = None
+
+    def __init__(self, info: EfwInfo) -> None:
         self.info: EfwInfo = info
-        self.sdk = sdk
         self.state: DeviceState = DeviceState.READY
 
     @staticmethod
-    def check_device(vid: int, pid: int, *, sdk: EfwSDKProtocol | None = None) -> bool:
+    def _get_sdk() -> EfwSDKProtocol:
+        if FilterWheel.sdk is None:
+            FilterWheel.sdk = ZwoEfwSDK()
+        return FilterWheel.sdk
+
+    @staticmethod
+    def check_device(vid: int, pid: int) -> bool:
         """Return True if the USB (VID, PID) pair is a supported ZWO EFW device."""
-        active_sdk = sdk if sdk is not None else ZwoEfwSDK()
-        return active_sdk.check(vid, pid)
+        return FilterWheel._get_sdk().check(vid, pid)
+
+    @staticmethod
+    def get_num() -> int:
+        """Return the number of connected ZWO EFW devices (rescans USB via EFWGetNum)."""
+        return FilterWheel._get_sdk().get_num()
 
     @staticmethod
     def open(
         device_index: int = 0,
         unidirectional: bool | None = None,
-        sdk: EfwSDKProtocol | None = None,
     ) -> FilterWheel:
-        if device_index < 0:
-            raise ZwoError(
-                f"EFWGetNum(index={device_index})",
-                EFWErrorCode.EFW_ERROR_INVALID_INDEX,
-                "EFW_ERROR_INVALID_INDEX",
-            )
-        active_sdk = sdk if sdk is not None else ZwoEfwSDK()
-        num = active_sdk.get_num()
-        if device_index >= num:
-            raise ZwoError(
-                f"EFWGetNum(index={device_index})",
-                EFWErrorCode.EFW_ERROR_INVALID_INDEX,
-                "EFW_ERROR_INVALID_INDEX",
-            )
-
+        active_sdk = FilterWheel._get_sdk()
         efw_id = active_sdk.get_id(device_index)
         active_sdk.open(efw_id)
         try:
@@ -105,7 +99,7 @@ class FilterWheel:
                 firmware_version=fw,
                 unidirectional=unidir,
             )
-            return FilterWheel(info=info, sdk=active_sdk)
+            return FilterWheel(info=info)
         except BaseException as init_exc:
             try:
                 active_sdk.close(efw_id)
@@ -117,7 +111,7 @@ class FilterWheel:
         if self.state == DeviceState.DISCONNECTED:
             return
         try:
-            self.sdk.close(self.info.id)
+            FilterWheel._get_sdk().close(self.info.id)
         except BaseException:
             self.state = DeviceState.UNKNOWN
             raise
@@ -162,7 +156,7 @@ class FilterWheel:
         """Return current 0-based slot (``0 .. slot_num - 1``), or ``-1`` if moving."""
         efw_id = self._require_id()
         try:
-            return self.sdk.get_position(efw_id)
+            return FilterWheel._get_sdk().get_position(efw_id)
         except ZwoError as exc:
             self._record_op_error(exc)
             raise
@@ -195,7 +189,7 @@ class FilterWheel:
             return (slot, 0)
 
         try:
-            self.sdk.set_position(efw_id, slot)
+            FilterWheel._get_sdk().set_position(efw_id, slot)
         except ZwoError as exc:
             self._record_op_error(exc)
             raise
@@ -209,7 +203,7 @@ class FilterWheel:
         validate_timeout(timeout)
         efw_id = self._require_id()
         try:
-            self.sdk.calibrate(efw_id)
+            FilterWheel._get_sdk().calibrate(efw_id)
         except ZwoError as exc:
             self._record_op_error(exc)
             raise

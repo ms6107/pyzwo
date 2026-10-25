@@ -11,12 +11,12 @@ import os
 import unittest
 
 from pyzwo import DeviceState, ZwoError
-from pyzwo.efw import EFW, EFWErrorCode, ZwoEfwSDK
+from pyzwo.efw import EFW, EFWErrorCode
 
 
 def _efw_connected() -> bool:
     try:
-        return ZwoEfwSDK().get_num() > 0
+        return EFW.get_num() > 0
     except Exception:
         return False
 
@@ -39,7 +39,7 @@ class TestEfwHardware(unittest.TestCase):
             self.skipTest("No physical ZWO EFW connected via USB")
 
     def test_hardware_readonly_open_and_query(self) -> None:
-        num_wheels = ZwoEfwSDK().get_num()
+        num_wheels = EFW.get_num()
         self.assertGreater(num_wheels, 0)
         for idx in range(num_wheels):
             with self.subTest(device_index=idx):
@@ -54,7 +54,7 @@ class TestEfwHardware(unittest.TestCase):
                     )
                 self.assertEqual(wheel.state, DeviceState.DISCONNECTED)
                 with self.assertRaises(ZwoError) as ctx_closed:
-                    wheel.sdk.get_position(dev_id)
+                    EFW._get_sdk().get_position(dev_id)
                 self.assertEqual(ctx_closed.exception.code, EFWErrorCode.EFW_ERROR_CLOSED)
                 self.assertEqual(ctx_closed.exception.code_name, "EFW_ERROR_CLOSED")
 
@@ -63,7 +63,7 @@ class TestEfwHardware(unittest.TestCase):
         "Set PYZWO_RUN_HARDWARE_MOTION_TESTS=1 to run physical filter wheel motion tests",
     )
     def test_hardware_move_next_slot_and_back(self) -> None:
-        num_wheels = ZwoEfwSDK().get_num()
+        num_wheels = EFW.get_num()
         self.assertGreater(num_wheels, 0)
         for idx in range(num_wheels):
             with self.subTest(device_index=idx), EFW.open(device_index=idx) as wheel:

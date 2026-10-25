@@ -45,7 +45,6 @@ class FakeEfwSDK:
         self.position = initial_slot
         self.unidirectional = False
         self.open_handles: set[int] = set()
-        self.id_requests: list[int] = []
         self.open_attempts = 0
         self.close_attempts = 0
         self.set_calls: list[str] = []
@@ -77,7 +76,6 @@ class FakeEfwSDK:
         return self.num_devices
 
     def get_id(self, index: int) -> int:
-        self.id_requests.append(index)
         self._maybe_fail("get_id")
         if index < 0 or index >= self.num_devices:
             raise make_zwo_error(f"EFWGetID({index})", EFWErrorCode.EFW_ERROR_INVALID_INDEX)
@@ -156,14 +154,22 @@ class FakeEfwSDK:
 class TestEfwClientUnit(unittest.TestCase):
     """Synchronous unit tests for the FilterWheel (EFW) controller."""
 
+    def tearDown(self) -> None:
+        FilterWheel.sdk = None
+
     def test_check_device(self) -> None:
-        fake = FakeEfwSDK()
-        self.assertTrue(FilterWheel.check_device(ZWO_VID, EFW_PID, sdk=fake))
-        self.assertFalse(FilterWheel.check_device(ZWO_VID, UNKNOWN_PID, sdk=fake))
+        FilterWheel.sdk = FakeEfwSDK()
+        self.assertTrue(FilterWheel.check_device(ZWO_VID, EFW_PID))
+        self.assertFalse(FilterWheel.check_device(ZWO_VID, UNKNOWN_PID))
+
+    def test_get_num(self) -> None:
+        FilterWheel.sdk = FakeEfwSDK(num_devices=2)
+        self.assertEqual(FilterWheel.get_num(), 2)
 
     def test_context_manager_opens_and_closes(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=0)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             self.assertEqual(wheel.state, DeviceState.READY)
             self.assertEqual(wheel.info.slot_num, SLOT_COUNT)
             self.assertEqual(wheel.info.id, 0)
@@ -173,7 +179,8 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_context_manager_closes_on_body_exception(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=0)
-        with self.assertRaises(RuntimeError), EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with self.assertRaises(RuntimeError), EFW.open() as wheel:
             self.assertEqual(fake.open_handles, {0})
             raise RuntimeError("caller error inside with block")
         self.assertEqual(fake.open_handles, set())
@@ -188,7 +195,8 @@ class TestEfwClientUnit(unittest.TestCase):
         for unidir_arg, expected_calls, expected_unidir in cases:
             with self.subTest(unidirectional=unidir_arg):
                 fake = FakeEfwSDK()
-                with EFW.open(unidirectional=unidir_arg, sdk=fake) as wheel:
+                EFW.sdk = fake
+                with EFW.open(unidirectional=unidir_arg) as wheel:
                     self.assertEqual(fake.set_calls, expected_calls)
                     self.assertEqual(fake.unidirectional, expected_unidir)
                     self.assertEqual(wheel.info.unidirectional, expected_unidir)
@@ -197,16 +205,17 @@ class TestEfwClientUnit(unittest.TestCase):
         for num_devices, bad_idx in [(0, 0), (1, -1), (1, 1)]:
             with self.subTest(num_devices=num_devices, device_index=bad_idx):
                 fake = FakeEfwSDK(num_devices=num_devices)
+                EFW.sdk = fake
                 with self.assertRaises(ZwoError) as ctx:
-                    EFW.open(device_index=bad_idx, sdk=fake)
+                    EFW.open(device_index=bad_idx)
                 self.assertEqual(ctx.exception.code, EFWErrorCode.EFW_ERROR_INVALID_INDEX)
-                self.assertEqual(fake.id_requests, [])
                 self.assertEqual(fake.open_attempts, 0)
                 self.assertEqual(fake.open_handles, set())
 
     def test_close_when_disconnected_is_idempotent(self) -> None:
         fake = FakeEfwSDK()
-        wheel = EFW.open(sdk=fake)
+        EFW.sdk = fake
+        wheel = EFW.open()
         wheel.close()
         wheel.close()
         self.assertEqual(fake.close_attempts, 1)
@@ -215,11 +224,12 @@ class TestEfwClientUnit(unittest.TestCase):
     def test_reopen_after_close_succeeds(self) -> None:
         initial_slot = 3
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=initial_slot)
-        wheel = EFW.open(sdk=fake)
+        EFW.sdk = fake
+        wheel = EFW.open()
         wheel.close()
         self.assertEqual(fake.open_handles, set())
 
-        wheel = EFW.open(sdk=fake)
+        wheel = EFW.open()
         self.assertEqual(wheel.info.slot_num, SLOT_COUNT)
         self.assertEqual(wheel.state, DeviceState.READY)
         self.assertEqual(fake.open_handles, {0})
@@ -228,10 +238,11 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_open_failure_does_not_call_close(self) -> None:
         fake = FakeEfwSDK()
+        EFW.sdk = fake
         open_err = make_zwo_error("EFWOpen(0)", EFWErrorCode.EFW_ERROR_GENERAL_ERROR)
         fake.fail_on["open"] = open_err
         with self.assertRaises(ZwoError) as ctx:
-            EFW.open(unidirectional=True, sdk=fake)
+            EFW.open(unidirectional=True)
         self.assertIs(ctx.exception, open_err)
         self.assertEqual(fake.open_attempts, 1)
         self.assertEqual(fake.close_attempts, 0)
@@ -242,10 +253,11 @@ class TestEfwClientUnit(unittest.TestCase):
         for step in steps:
             with self.subTest(step=step):
                 fake = FakeEfwSDK()
+                EFW.sdk = fake
                 injected = make_zwo_error(f"injected_{step}", EFWErrorCode.EFW_ERROR_GENERAL_ERROR)
                 fake.fail_on[step] = injected
                 with self.assertRaises(ZwoError) as ctx:
-                    EFW.open(unidirectional=True, sdk=fake)
+                    EFW.open(unidirectional=True)
                 self.assertIs(ctx.exception, injected)
                 self.assertEqual(fake.open_attempts, 1)
                 self.assertEqual(fake.close_attempts, 1)
@@ -253,19 +265,21 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_open_rollback_close_failure_attaches_error(self) -> None:
         fake = FakeEfwSDK()
+        EFW.sdk = fake
         init_err = make_zwo_error("EFWGetFirmwareVersion(0)", EFWErrorCode.EFW_ERROR_GENERAL_ERROR)
         close_err = make_zwo_error("EFWClose(0)", EFWErrorCode.EFW_ERROR_GENERAL_ERROR)
         fake.fail_on["get_firmware_version"] = init_err
         fake.fail_on["close"] = close_err
         with self.assertRaises(ZwoError) as ctx:
-            EFW.open(sdk=fake)
+            EFW.open()
         self.assertIs(ctx.exception, init_err)
         self.assertIn(f"rollback close(id=0) also failed: {close_err}", ctx.exception.__notes__)
         self.assertEqual(fake.open_handles, {0})
 
     def test_close_failure_retains_handle_and_marks_unknown_until_retry(self) -> None:
         fake = FakeEfwSDK()
-        wheel = EFW.open(sdk=fake)
+        EFW.sdk = fake
+        wheel = EFW.open()
         fake.fail_on["close"] = make_zwo_error("EFWClose(0)", EFWErrorCode.EFW_ERROR_GENERAL_ERROR)
         with self.assertRaises(ZwoError):
             wheel.close()
@@ -280,7 +294,8 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_operations_rejected_when_state_is_unknown(self) -> None:
         fake = FakeEfwSDK()
-        wheel = EFW.open(sdk=fake)
+        EFW.sdk = fake
+        wheel = EFW.open()
         fake.fail_on["close"] = make_zwo_error("EFWClose(0)", EFWErrorCode.EFW_ERROR_GENERAL_ERROR)
         with self.assertRaises(ZwoError):
             wheel.close()
@@ -303,14 +318,16 @@ class TestEfwClientUnit(unittest.TestCase):
         for pos in (MOVING_POS, first_slot, last_slot):
             with self.subTest(pos=pos):
                 fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=2)
-                with EFW.open(sdk=fake) as wheel:
+                EFW.sdk = fake
+                with EFW.open() as wheel:
                     fake.position = pos
                     self.assertEqual(wheel.get_slot(), pos)
 
     def test_move_to_slot_polls_until_settled(self) -> None:
         target_slot = 4
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=0)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             settled, polls = wheel.move_to_slot(target_slot)
             self.assertEqual(settled, target_slot)
             self.assertGreater(polls, 0)
@@ -321,7 +338,8 @@ class TestEfwClientUnit(unittest.TestCase):
     def test_move_to_current_slot_is_noop(self) -> None:
         current_slot = 4
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=current_slot)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             settled, polls = wheel.move_to_slot(current_slot)
             self.assertEqual((settled, polls), (current_slot, 0))
             self.assertEqual(fake.move_attempts, [])
@@ -332,7 +350,8 @@ class TestEfwClientUnit(unittest.TestCase):
         for bad_slot in (-1, SLOT_COUNT):
             with self.subTest(slot=bad_slot):
                 fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=2)
-                with EFW.open(sdk=fake) as wheel:
+                EFW.sdk = fake
+                with EFW.open() as wheel:
                     with self.assertRaises(ZwoError) as ctx:
                         wheel.move_to_slot(bad_slot, timeout=0.05)
                     self.assertEqual(ctx.exception.code, EFWErrorCode.EFW_ERROR_INVALID_VALUE)
@@ -341,7 +360,8 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_move_to_slot_rejects_invalid_timeout(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=2)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             for bad_timeout in (0.0, -1.0, float("nan"), float("inf")):
                 with self.subTest(timeout=bad_timeout):
                     with self.assertRaises(ValueError):
@@ -349,7 +369,8 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_move_to_slot_rejects_when_wheel_already_moving(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=2)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             fake.position = MOVING_POS
             with self.assertRaises(ZwoError) as ctx:
                 wheel.move_to_slot(4, timeout=0.05)
@@ -361,7 +382,8 @@ class TestEfwClientUnit(unittest.TestCase):
         initial_slot = 2
         target_slot = 3
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=initial_slot)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             fake.stuck_moving = True
             with self.assertRaises(ZwoTimeoutError):
                 wheel.move_to_slot(target_slot, timeout=0.01)
@@ -371,7 +393,8 @@ class TestEfwClientUnit(unittest.TestCase):
         initial_slot = 3
         calibrated_slot = 0
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=initial_slot)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             settled_slot, polls = wheel.calibrate(timeout=0.05)
             self.assertEqual(settled_slot, calibrated_slot)
             self.assertGreater(polls, 0)
@@ -381,7 +404,8 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_calibrate_timeout_raises(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=3)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             fake.stuck_moving = True
             with self.assertRaises(ZwoTimeoutError):
                 wheel.calibrate(timeout=0.01)
@@ -389,7 +413,8 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_removed_error_transitions_to_fault(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=1)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             fake.fail_on["get_position"] = make_zwo_error("EFWGetPosition(0)", EFWErrorCode.EFW_ERROR_REMOVED)
             with self.assertRaises(ZwoError) as ctx:
                 wheel.get_slot()
@@ -398,7 +423,8 @@ class TestEfwClientUnit(unittest.TestCase):
 
     def test_operations_rejected_while_in_fault_state(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=1)
-        with EFW.open(sdk=fake) as wheel:
+        EFW.sdk = fake
+        with EFW.open() as wheel:
             fake.fail_on["get_position"] = make_zwo_error("EFWGetPosition(0)", EFWErrorCode.EFW_ERROR_REMOVED)
             with self.assertRaises(ZwoError):
                 wheel.get_slot()
@@ -418,7 +444,8 @@ class TestEfwClientUnit(unittest.TestCase):
     def test_close_and_reopen_recovers_from_removed_fault(self) -> None:
         initial_slot = 1
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=initial_slot)
-        wheel = EFW.open(sdk=fake)
+        EFW.sdk = fake
+        wheel = EFW.open()
         fake.fail_on["get_position"] = make_zwo_error("EFWGetPosition(0)", EFWErrorCode.EFW_ERROR_REMOVED)
         with self.assertRaises(ZwoError):
             wheel.get_slot()
@@ -429,7 +456,7 @@ class TestEfwClientUnit(unittest.TestCase):
         self.assertEqual(wheel.state, DeviceState.DISCONNECTED)
         self.assertEqual(fake.open_handles, set())
 
-        wheel = EFW.open(sdk=fake)
+        wheel = EFW.open()
         self.assertEqual(wheel.state, DeviceState.READY)
         self.assertEqual(wheel.info.slot_num, SLOT_COUNT)
         self.assertEqual(wheel.get_slot(), initial_slot)
