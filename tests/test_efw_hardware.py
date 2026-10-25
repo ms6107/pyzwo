@@ -73,12 +73,12 @@ class TestEfwHardware(unittest.TestCase):
                 self.assertTrue(0 <= start_slot < slot_num)
                 target_slot = (start_slot + 1) % slot_num
 
-                settled_next, _ = wheel.move_to_slot(target_slot, poll_interval=0.05, timeout=30.0)
+                settled_next, _ = wheel.move_to_slot(target_slot, timeout=30.0)
                 self.assertEqual(settled_next, target_slot)
                 self.assertEqual(wheel.get_slot(), target_slot)
                 self.assertEqual(wheel.state, DeviceState.READY)
 
-                settled_back, _ = wheel.move_to_slot(start_slot, poll_interval=0.05, timeout=30.0)
+                settled_back, _ = wheel.move_to_slot(start_slot, timeout=30.0)
                 self.assertEqual(settled_back, start_slot)
                 self.assertEqual(wheel.get_slot(), start_slot)
                 self.assertEqual(wheel.state, DeviceState.READY)

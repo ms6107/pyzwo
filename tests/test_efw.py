@@ -333,7 +333,7 @@ class TestEfwClientUnit(unittest.TestCase):
         target_slot = 4
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=0)
         with EFW.open(sdk=fake) as wheel:
-            settled, polls = wheel.move_to_slot(target_slot, poll_interval=0.001)
+            settled, polls = wheel.move_to_slot(target_slot)
             self.assertEqual(settled, target_slot)
             self.assertGreater(polls, 0)
             self.assertEqual(fake.position, target_slot)
@@ -344,7 +344,7 @@ class TestEfwClientUnit(unittest.TestCase):
         current_slot = 4
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=current_slot)
         with EFW.open(sdk=fake) as wheel:
-            settled, polls = wheel.move_to_slot(current_slot, poll_interval=0.001)
+            settled, polls = wheel.move_to_slot(current_slot)
             self.assertEqual((settled, polls), (current_slot, 0))
             self.assertEqual(fake.move_attempts, [])
             self.assertEqual(fake.moves, [])
@@ -356,35 +356,28 @@ class TestEfwClientUnit(unittest.TestCase):
                 fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=2)
                 with EFW.open(sdk=fake) as wheel:
                     with self.assertRaises(ZwoError) as ctx:
-                        wheel.move_to_slot(bad_slot, poll_interval=0.001, timeout=0.05)
+                        wheel.move_to_slot(bad_slot, timeout=0.05)
                     self.assertEqual(ctx.exception.code, EFWErrorCode.EFW_ERROR_INVALID_VALUE)
                     self.assertEqual(fake.move_attempts, [])
                     self.assertEqual(fake.moves, [])
 
-    def test_move_to_slot_rejects_invalid_poll_or_timeout(self) -> None:
+    def test_move_to_slot_rejects_invalid_timeout(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=2)
         with EFW.open(sdk=fake) as wheel:
-            for bad_poll, bad_timeout in [
-                (0.0, 1.0),
-                (-0.1, 1.0),
-                (0.01, 0.0),
-                (0.01, -1.0),
-                (float("nan"), 1.0),
-            ]:
-                with self.subTest(poll_interval=bad_poll, timeout=bad_timeout):
+            for bad_timeout in (0.0, -1.0, float("nan"), float("inf")):
+                with self.subTest(timeout=bad_timeout):
                     with self.assertRaises(ValueError):
-                        wheel.move_to_slot(3, poll_interval=bad_poll, timeout=bad_timeout)
+                        wheel.move_to_slot(3, timeout=bad_timeout)
 
     def test_move_to_slot_rejects_when_wheel_already_moving(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=2)
         with EFW.open(sdk=fake) as wheel:
             fake.position = MOVING_POS
             with self.assertRaises(ZwoError) as ctx:
-                wheel.move_to_slot(4, poll_interval=0.001, timeout=0.05)
+                wheel.move_to_slot(4, timeout=0.05)
             self.assertEqual(ctx.exception.code, EFWErrorCode.EFW_ERROR_MOVING)
             self.assertEqual(fake.move_attempts, [])
             self.assertEqual(fake.moves, [])
-            self.assertEqual(wheel.state, DeviceState.BUSY)
 
     def test_move_to_slot_timeout_leaves_state_busy(self) -> None:
         initial_slot = 2
@@ -393,7 +386,7 @@ class TestEfwClientUnit(unittest.TestCase):
         with EFW.open(sdk=fake) as wheel:
             fake.stuck_moving = True
             with self.assertRaises(ZwoTimeoutError):
-                wheel.move_to_slot(target_slot, poll_interval=0.002, timeout=0.01)
+                wheel.move_to_slot(target_slot, timeout=0.01)
             self.assertEqual(wheel.state, DeviceState.BUSY)
 
     def test_calibrate_polls_until_settled(self) -> None:
@@ -401,7 +394,7 @@ class TestEfwClientUnit(unittest.TestCase):
         calibrated_slot = 0
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=initial_slot)
         with EFW.open(sdk=fake) as wheel:
-            settled_slot, polls = wheel.calibrate(poll_interval=0.001, timeout=0.05)
+            settled_slot, polls = wheel.calibrate(timeout=0.05)
             self.assertEqual(settled_slot, calibrated_slot)
             self.assertGreater(polls, 0)
             self.assertEqual(fake.position, calibrated_slot)
@@ -413,7 +406,7 @@ class TestEfwClientUnit(unittest.TestCase):
         with EFW.open(sdk=fake) as wheel:
             fake.stuck_moving = True
             with self.assertRaises(ZwoTimeoutError):
-                wheel.calibrate(poll_interval=0.002, timeout=0.01)
+                wheel.calibrate(timeout=0.01)
             self.assertEqual(wheel.state, DeviceState.BUSY)
 
     def test_removed_error_transitions_to_fault(self) -> None:

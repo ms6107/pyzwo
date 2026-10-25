@@ -84,7 +84,7 @@ from pyzwo import EFW
 with EFW.open(device_index=0) as wheel:
     print(wheel.info)  # EfwInfo(id=0, name='EFW', slot_num=7, firmware_version='3.5.2', unidirectional=False)
     print(wheel.get_slot())  # 0-based SDK slot (0 .. slot_num - 1), or -1 if moving
-    settled_slot, polls = wheel.move_to_slot(2, poll_interval=0.05, timeout=30.0)
+    settled_slot, polls = wheel.move_to_slot(2, timeout=30.0)
     print(f"Settled at slot {settled_slot} after {polls} moving polls")
 ```
 

@@ -53,10 +53,8 @@ def attach_rollback_error(init_exc: BaseException, dev_id: int, close_exc: BaseE
         init_exc.rollback_error = close_exc
 
 
-def validate_poll_and_timeout(poll_interval: float, timeout: float) -> None:
-    """Validate that poll_interval and timeout are positive finite numbers."""
-    if not math.isfinite(poll_interval) or poll_interval <= 0:
-        raise ValueError(f"poll_interval must be a positive finite number, got {poll_interval!r}")
+def validate_timeout(timeout: float) -> None:
+    """Validate that timeout is a positive finite number."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 

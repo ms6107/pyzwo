@@ -17,7 +17,7 @@ from ._loader import (
     ZwoError,
     ZwoTimeoutError,
     attach_rollback_error,
-    validate_poll_and_timeout,
+    validate_timeout,
 )
 
 
@@ -167,6 +167,21 @@ class FilterWheel:
         if isinstance(exc, ZwoError) and exc.code == EFWErrorCode.EFW_ERROR_REMOVED:
             self.state = DeviceState.FAULT
 
+    def _wait_until_settled(self, op: str, timeout: float) -> tuple[int, int]:
+        deadline = time.monotonic() + timeout
+        moving_polls = 0
+        while True:
+            pos = self.get_slot()
+            if pos != -1:
+                self.state = DeviceState.READY
+                return (pos, moving_polls)
+            moving_polls += 1
+            if time.monotonic() >= deadline:
+                raise ZwoTimeoutError(
+                    f"{op} timed out after {timeout:.2f}s "
+                    f"(last pos={pos}, moving_polls={moving_polls}); physical outcome unknown"
+                )
+
     def get_slot(self) -> int:
         """Return current 0-based slot (``0 .. slot_num - 1``), or ``-1`` if moving."""
         efw_id = self._require_id()
@@ -179,11 +194,10 @@ class FilterWheel:
     def move_to_slot(
         self,
         slot: int,
-        poll_interval: float = 0.05,
         timeout: float = 60.0,
     ) -> tuple[int, int]:
         """Move to 0-based SDK slot and wait until settled. Returns ``(settled_slot, moving_polls)``."""
-        validate_poll_and_timeout(poll_interval, timeout)
+        validate_timeout(timeout)
         efw_id = self._require_id()
 
         slot_num = self.info.slot_num
@@ -194,66 +208,38 @@ class FilterWheel:
                 "EFW_ERROR_INVALID_VALUE",
             )
 
+        cur = self.get_slot()
+        if cur == -1:
+            raise ZwoError(
+                f"EFWGetPosition({efw_id}) reported wheel is already moving (-1)",
+                EFWErrorCode.EFW_ERROR_MOVING,
+                "EFW_ERROR_MOVING",
+            )
+        if cur == slot:
+            return (slot, 0)
+
         self.state = DeviceState.BUSY
         try:
-            cur = self.sdk.get_position(efw_id)
-            if cur == -1:
-                raise ZwoError(
-                    f"EFWGetPosition({efw_id}) reported wheel is already moving (-1)",
-                    EFWErrorCode.EFW_ERROR_MOVING,
-                    "EFW_ERROR_MOVING",
-                )
-            if cur == slot:
-                self.state = DeviceState.READY
-                return (slot, 0)
-
-            deadline = time.monotonic() + timeout
             self.sdk.set_position(efw_id, slot)
-            moving_polls = 0
-            while True:
-                pos = self.sdk.get_position(efw_id)
-                if pos != -1:
-                    self.state = DeviceState.READY
-                    return (pos, moving_polls)
-                moving_polls += 1
-                if time.monotonic() >= deadline:
-                    raise ZwoTimeoutError(
-                        f"EFWSetPosition({efw_id}, {slot}) timed out after {timeout:.2f}s "
-                        f"(last pos={pos}, moving_polls={moving_polls}); physical outcome unknown"
-                    )
-                time.sleep(poll_interval)
         except BaseException as exc:
             self._record_op_error(exc)
             raise
+        return self._wait_until_settled(f"EFWSetPosition({efw_id}, {slot})", timeout)
 
     def calibrate(
         self,
-        poll_interval: float = 0.05,
         timeout: float = 60.0,
     ) -> tuple[int, int]:
         """Run full hardware calibration (``EFWCalibrate``) and wait until settled."""
-        validate_poll_and_timeout(poll_interval, timeout)
+        validate_timeout(timeout)
         efw_id = self._require_id()
         self.state = DeviceState.BUSY
         try:
-            deadline = time.monotonic() + timeout
             self.sdk.calibrate(efw_id)
-            moving_polls = 0
-            while True:
-                pos = self.sdk.get_position(efw_id)
-                if pos != -1:
-                    self.state = DeviceState.READY
-                    return (pos, moving_polls)
-                moving_polls += 1
-                if time.monotonic() >= deadline:
-                    raise ZwoTimeoutError(
-                        f"EFWCalibrate({efw_id}) timed out after {timeout:.2f}s "
-                        f"(last pos={pos}, moving_polls={moving_polls}); physical outcome unknown"
-                    )
-                time.sleep(poll_interval)
         except BaseException as exc:
             self._record_op_error(exc)
             raise
+        return self._wait_until_settled(f"EFWCalibrate({efw_id})", timeout)
 
 
 EFW = FilterWheel
