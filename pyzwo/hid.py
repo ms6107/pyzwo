@@ -16,6 +16,7 @@ Endpoint 0 using a shared `7e 5a` (`"~Z"`) framing protocol:
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any, Self
 
@@ -63,7 +64,7 @@ class ZwoHid:
 
     def __init__(self, path: str) -> None:
         self.path = path
-        raw_path = path.encode("utf-8")
+        raw_path = os.fsencode(path)
         try:
             with _LIFECYCLE_LOCK:
                 self._device: Any = _get_hid().Device(path=raw_path)
@@ -86,13 +87,7 @@ class ZwoHid:
         """Return sorted HID device paths matching `cls.VID` and `cls.PIDS`."""
         backend = _get_hid()
         with _LIFECYCLE_LOCK:
-            return sorted(
-                {
-                    info["path"].decode("utf-8", errors="replace")
-                    for pid in cls.PIDS
-                    for info in backend.enumerate(cls.VID, pid)
-                }
-            )
+            return sorted({os.fsdecode(info["path"]) for pid in cls.PIDS for info in backend.enumerate(cls.VID, pid)})
 
     def _send(self, payload: bytes) -> None:
         """Send a 16-byte `[03 7e 5a <payload>...]` feature report."""
