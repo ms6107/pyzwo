@@ -40,16 +40,7 @@ class ZwoError(RuntimeError):
         self.operation = operation
         self.code = code
         self.code_name = code_name
-        self.rollback_error: BaseException | None = None
         super().__init__(f"{operation} failed with {code_name} (rc={code})")
-
-
-def attach_rollback_error(init_exc: BaseException, dev_id: int, close_exc: BaseException) -> None:
-    """Attach a rollback close failure to an initialization exception without masking it."""
-    note = f"rollback close(id={dev_id}) also failed: {close_exc}"
-    init_exc.add_note(note)
-    if isinstance(init_exc, (ZwoError, ZwoTimeoutError)):
-        init_exc.rollback_error = close_exc
 
 
 def validate_timeout(timeout: float) -> None:
@@ -64,8 +55,6 @@ class ZwoTimeoutError(TimeoutError):
     Note: In the synchronous baseline, deadlines are checked between SDK calls; a
     blocked native C call inside the vendor library has no pre-emptive timeout.
     """
-
-    rollback_error: BaseException | None = None
 
 
 def _arch_subdir() -> str:

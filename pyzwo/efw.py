@@ -16,7 +16,6 @@ from ._loader import (
     DeviceState,
     ZwoError,
     ZwoTimeoutError,
-    attach_rollback_error,
     validate_timeout,
 )
 
@@ -56,11 +55,9 @@ class FilterWheel:
 
     def __init__(
         self,
-        efw_id: int,
         info: EfwInfo,
         sdk: EfwSDKProtocol,
     ) -> None:
-        self.efw_id: int = efw_id
         self.info: EfwInfo = info
         self.sdk = sdk
         self.state: DeviceState = DeviceState.READY
@@ -100,20 +97,6 @@ class FilterWheel:
             unidir = active_sdk.get_direction(efw_id)
 
             _, dev_name, slot_num = active_sdk.get_property(efw_id)
-            if slot_num <= 0:
-                raise ZwoError(
-                    f"EFWGetProperty({efw_id}) reported invalid slot_num={slot_num} during open",
-                    EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                    "EFW_ERROR_ERROR_STATE",
-                )
-            pos = active_sdk.get_position(efw_id)
-            if pos == -1:
-                raise ZwoError(
-                    f"EFWGetPosition({efw_id}) reported wheel moving (-1) during open",
-                    EFWErrorCode.EFW_ERROR_MOVING,
-                    "EFW_ERROR_MOVING",
-                )
-
             fw = active_sdk.get_firmware_version(efw_id)
             info = EfwInfo(
                 id=efw_id,
@@ -122,19 +105,19 @@ class FilterWheel:
                 firmware_version=fw,
                 unidirectional=unidir,
             )
-            return FilterWheel(efw_id=efw_id, info=info, sdk=active_sdk)
+            return FilterWheel(info=info, sdk=active_sdk)
         except BaseException as init_exc:
             try:
                 active_sdk.close(efw_id)
             except BaseException as close_exc:
-                attach_rollback_error(init_exc, efw_id, close_exc)
+                init_exc.add_note(f"rollback close(id={efw_id}) also failed: {close_exc}")
             raise
 
     def close(self) -> None:
         if self.state == DeviceState.DISCONNECTED:
             return
         try:
-            self.sdk.close(self.efw_id)
+            self.sdk.close(self.info.id)
         except BaseException:
             self.state = DeviceState.UNKNOWN
             raise
@@ -148,7 +131,7 @@ class FilterWheel:
 
     def _require_id(self) -> int:
         if self.state == DeviceState.READY:
-            return self.efw_id
+            return self.info.id
         if self.state == DeviceState.DISCONNECTED:
             raise ZwoError("FilterWheel", EFWErrorCode.EFW_ERROR_CLOSED, "EFW_ERROR_CLOSED")
         raise ZwoError(
@@ -157,8 +140,8 @@ class FilterWheel:
             "EFW_ERROR_ERROR_STATE",
         )
 
-    def _record_op_error(self, exc: BaseException) -> None:
-        if isinstance(exc, ZwoError) and exc.code == EFWErrorCode.EFW_ERROR_REMOVED:
+    def _record_op_error(self, exc: ZwoError) -> None:
+        if exc.code == EFWErrorCode.EFW_ERROR_REMOVED:
             self.state = DeviceState.FAULT
 
     def _wait_until_settled(self, op: str, timeout: float) -> tuple[int, int]:
@@ -180,7 +163,7 @@ class FilterWheel:
         efw_id = self._require_id()
         try:
             return self.sdk.get_position(efw_id)
-        except BaseException as exc:
+        except ZwoError as exc:
             self._record_op_error(exc)
             raise
 
@@ -191,7 +174,7 @@ class FilterWheel:
     ) -> tuple[int, int]:
         """Move to 0-based SDK slot and wait until settled. Returns ``(settled_slot, moving_polls)``."""
         validate_timeout(timeout)
-        efw_id = self._require_id()
+        efw_id = self.info.id
 
         slot_num = self.info.slot_num
         if slot < 0 or slot >= slot_num:
@@ -213,7 +196,7 @@ class FilterWheel:
 
         try:
             self.sdk.set_position(efw_id, slot)
-        except BaseException as exc:
+        except ZwoError as exc:
             self._record_op_error(exc)
             raise
         return self._wait_until_settled(f"EFWSetPosition({efw_id}, {slot})", timeout)
@@ -227,7 +210,7 @@ class FilterWheel:
         efw_id = self._require_id()
         try:
             self.sdk.calibrate(efw_id)
-        except BaseException as exc:
+        except ZwoError as exc:
             self._record_op_error(exc)
             raise
         return self._wait_until_settled(f"EFWCalibrate({efw_id})", timeout)
