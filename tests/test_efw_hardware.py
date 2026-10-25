@@ -43,7 +43,7 @@ class TestEfwHardware(unittest.TestCase):
         self.assertGreater(num_wheels, 0)
         for idx in range(num_wheels):
             with self.subTest(device_index=idx):
-                with EFW(device_index=idx) as wheel:
+                with EFW.open(device_index=idx) as wheel:
                     self.assertEqual(wheel.state, DeviceState.READY)
                     self.assertIsNotNone(wheel.info)
                     assert wheel.info is not None
@@ -69,7 +69,7 @@ class TestEfwHardware(unittest.TestCase):
         num_wheels = ZwoEfwSDK().get_num()
         self.assertGreater(num_wheels, 0)
         for idx in range(num_wheels):
-            with self.subTest(device_index=idx), EFW(device_index=idx) as wheel:
+            with self.subTest(device_index=idx), EFW.open(device_index=idx) as wheel:
                 self.assertIsNotNone(wheel.info)
                 assert wheel.info is not None
                 slot_num = wheel.info.slot_num

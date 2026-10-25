@@ -20,7 +20,7 @@ To verify `ctypes` struct layouts (`_EFWInfo`, `_EFWID`), `EFWErrorCode` enum va
 
 Key lifecycle and hardware behaviors in the synchronous EFW controller (`FilterWheel` / `EFW`):
 - **Explicit discovery & zero-based slots:** `open()` validates `0 <= device_index < get_num()` before querying `EFWGetID(device_index)`. Slot positions follow the ZWO SDK's zero-based convention (`0 .. slot_num - 1`), with `-1` indicating the wheel is currently in motion (`EFW_ERROR_MOVING`).
-- **Non-destructive `open()` with exception-safe rollback:** Opening a wheel only reads its current properties (`EFWGetProperty`, `EFWGetDirection`, `EFWGetFirmwareVersion`) unless `unidirectional` is explicitly passed to `FilterWheel(...)`. If any initialization step fails after `EFWOpen(id)` succeeds, `open()` automatically calls `EFWClose(id)` before re-raising; if rollback `EFWClose(id)` also fails, both errors are reported and the controller enters `DeviceState.UNKNOWN`.
+- **Non-destructive `FilterWheel.open()` factory with exception-safe rollback:** `FilterWheel.open()` returns a healthy `FilterWheel` in `DeviceState.READY` or raises an exception. Opening a wheel only reads its current properties (`EFWGetProperty`, `EFWGetDirection`, `EFWGetFirmwareVersion`) unless `unidirectional` is explicitly passed to `FilterWheel.open(...)`. If any initialization step fails after `EFWOpen(id)` succeeds, `open()` automatically calls `EFWClose(id)` before re-raising; if rollback `EFWClose(id)` also fails, both errors are reported.
 - **Hardware quirk guards:**
   - Commanding `EFWSetPosition` to the slot the wheel is already on returns `EFW_ERROR_GENERAL_ERROR (rc=7)` on real hardware; `move_to_slot()` checks the current slot first and returns `(slot, 0)` without issuing a redundant move (or rejects with `EFW_ERROR_MOVING` if the wheel is already moving).
   - Immediately after `EFWOpen`, some wheels transiently report `EFW_ERROR_MOVING` or `slot_num == 0` while completing power-on initialization; `open()` polls with a monotonic deadline until `slot_num > 0` and the wheel settles at a valid slot (`0 <= pos < slot_num`).
@@ -30,7 +30,7 @@ Key lifecycle and hardware behaviors in the synchronous EFW controller (`FilterW
 
 - **Single-owner, single-thread contract:** `FilterWheel` (`EFW`) and `ZwoEfwSDK` are synchronous and designed for a single owner on a single thread. This baseline makes **no promise of thread safety** across concurrent threads and does **not** support simultaneous raw (`ZwoEfwSDK`) and managed (`FilterWheel`) access to the same device or vendor library. Do not rely on the Python GIL to make concurrent native C calls safe. Separate OS processes accessing the same USB device cannot be coordinated in-process.
 - **Polling deadlines vs. native C calls:** The `timeout` argument on `open()`, `move_to_slot()`, and `calibrate()` is a **Python-level monotonic polling deadline** checked between SDK calls. A synchronous native C call inside `libEFWFilter` has **no pre-emptive timeout**—if the vendor C function blocks in the kernel or USB stack, the calling Python thread will remain blocked until that C call returns.
-- **Honest fault & recovery states (`DeviceState`):** ZWO's `libEFWFilter` SDK does not provide a physical stop command. If `move_to_slot()` or `calibrate()` exceeds its polling deadline, settles on the wrong slot, or encounters an SDK error (such as `EFW_ERROR_REMOVED` on USB disconnect), `FilterWheel.state` transitions to `DeviceState.FAULT` and subsequent motion/query commands fail fast. The controller only returns to `DeviceState.READY` after `reconcile()` (or `close()` + `open()`) re-queries the hardware and confirms `slot_num > 0` and a settled position `0 <= pos < slot_num`. If `close()` itself fails, the handle remains retained and `state` transitions to `DeviceState.UNKNOWN` so `close()` can be retried.
+- **Honest fault & recovery states (`DeviceState`):** ZWO's `libEFWFilter` SDK does not provide a physical stop command. If `move_to_slot()` or `calibrate()` exceeds its polling deadline, settles on the wrong slot, or encounters an SDK error (such as `EFW_ERROR_REMOVED` on USB disconnect), `FilterWheel.state` transitions to `DeviceState.FAULT` and subsequent motion/query commands fail fast. The controller only returns to `DeviceState.READY` after `close()` + `open()` re-queries the hardware and confirms `slot_num > 0` and a settled position `0 <= pos < slot_num`. If `close()` itself fails, the handle remains retained and `state` transitions to `DeviceState.UNKNOWN` so `close()` can be retried.
 
 ## Device classes & roadmap
 
@@ -82,7 +82,7 @@ After adding a user to the `zwo` group, log out and log back in (or restart the 
 ```python
 from pyzwo import EFW
 
-with EFW(device_index=0) as wheel:
+with EFW.open(device_index=0) as wheel:
     print(wheel.info)  # EfwInfo(id=0, name='EFW', slot_num=7, firmware_version='3.5.2', unidirectional=False)
     print(wheel.get_slot())  # 0-based SDK slot (0 .. slot_num - 1), or -1 if moving
     settled_slot, polls = wheel.move_to_slot(2, poll_interval=0.05, timeout=30.0)

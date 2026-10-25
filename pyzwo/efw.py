@@ -38,10 +38,11 @@ class FilterWheel:
     Usage contract, deadlines & recovery semantics:
     - Single-owner, single-thread only. Concurrent calls across threads or simultaneous
       direct ``ZwoEfwSDK`` and ``FilterWheel`` calls on the same device are unsupported.
-    - ``open()`` is non-destructive by default; it only writes ``unidirectional`` if
-      explicitly passed to the constructor. If any initialization step fails after
-      ``EFWOpen(id)`` succeeds, ``open()`` rolls back via ``EFWClose(id)`` to prevent
-      handle leaks (though hardware settings already written are not reverted).
+    - ``FilterWheel.open(...)`` is a static factory that returns a healthy ``FilterWheel``
+      in ``DeviceState.READY`` or raises an exception. It is non-destructive by default
+      and only writes ``unidirectional`` if explicitly passed. If any initialization step
+      fails after ``EFWOpen(id)`` succeeds, ``open()`` rolls back via ``EFWClose(id)`` to
+      prevent handle leaks (though hardware settings already written are not reverted).
     - ``close()`` is idempotent when disconnected and clears ``self.info``. If
       ``EFWClose`` fails, the handle remains retained and ``self.state`` becomes
       ``DeviceState.UNKNOWN`` so ``close()`` can be retried.
@@ -49,23 +50,22 @@ class FilterWheel:
       enforce Python-level monotonic polling deadlines between SDK calls. A blocked
       native C call inside ``libEFWFilter`` has no pre-emptive timeout.
     - Failed or timed-out movements/calibrations and ``EFW_ERROR_REMOVED`` disconnects
-      transition ``self.state`` to ``DeviceState.FAULT``. The controller only returns to
-      ``DeviceState.READY`` after re-querying live hardware via ``reconcile()`` or
-      ``close()`` + ``open()``.
+      transition ``self.state`` to ``DeviceState.FAULT``. To recover, call ``close()``
+      and open a new ``FilterWheel`` via ``FilterWheel.open(...)``.
     """
 
     def __init__(
         self,
-        device_index: int = 0,
-        unidirectional: bool | None = None,
-        sdk: ZwoEfwSDK | None = None,
+        device_index: int,
+        efw_id: int,
+        info: EfwInfo,
+        sdk: ZwoEfwSDK,
     ) -> None:
         self.device_index = device_index
-        self._cfg_unidirectional = unidirectional
-        self._sdk_instance: ZwoEfwSDK | None = sdk
-        self.efw_id: int | None = None
-        self.info: EfwInfo | None = None
-        self.state: DeviceState = DeviceState.DISCONNECTED
+        self.efw_id: int | None = efw_id
+        self.info: EfwInfo | None = info
+        self.sdk = sdk
+        self.state: DeviceState = DeviceState.READY
 
     @staticmethod
     def check_device(vid: int, pid: int, *, sdk: ZwoEfwSDK | None = None) -> bool:
@@ -73,70 +73,45 @@ class FilterWheel:
         active_sdk = sdk if sdk is not None else ZwoEfwSDK()
         return active_sdk.check(vid, pid)
 
-    @property
-    def sdk(self) -> ZwoEfwSDK:
-        if self._sdk_instance is None:
-            self._sdk_instance = ZwoEfwSDK()
-        return self._sdk_instance
-
-    @sdk.setter
-    def sdk(self, value: ZwoEfwSDK) -> None:
-        self._sdk_instance = value
-
-    def open(self, timeout: float = 15.0, poll_interval: float = 0.1) -> EfwInfo:
+    @staticmethod
+    def open(
+        device_index: int = 0,
+        unidirectional: bool | None = None,
+        timeout: float = 15.0,
+        poll_interval: float = 0.1,
+        sdk: ZwoEfwSDK | None = None,
+    ) -> FilterWheel:
         validate_poll_and_timeout(poll_interval, timeout)
-        if self.state == DeviceState.UNKNOWN:
+        if isinstance(device_index, bool) or not isinstance(device_index, int) or device_index < 0:
             raise ZwoError(
-                f"EFWOpen(id={self.efw_id}): connection state is UNKNOWN; call close() first",
-                EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                "EFW_ERROR_ERROR_STATE",
-            )
-        if self.efw_id is not None or self.state in (
-            DeviceState.READY,
-            DeviceState.BUSY,
-            DeviceState.CONNECTING,
-            DeviceState.FAULT,
-        ):
-            raise ZwoError(
-                f"EFWOpen(id={self.efw_id}): already open",
-                EFWErrorCode.EFW_ERROR_GENERAL_ERROR,
-                "EFW_ERROR_GENERAL_ERROR",
-            )
-        if isinstance(self.device_index, bool) or not isinstance(self.device_index, int) or self.device_index < 0:
-            raise ZwoError(
-                f"EFWGetNum(index={self.device_index})",
+                f"EFWGetNum(index={device_index})",
                 EFWErrorCode.EFW_ERROR_INVALID_INDEX,
                 "EFW_ERROR_INVALID_INDEX",
             )
-        num = self.sdk.get_num()
-        if self.device_index >= num:
+        active_sdk = sdk if sdk is not None else ZwoEfwSDK()
+        num = active_sdk.get_num()
+        if device_index >= num:
             raise ZwoError(
-                f"EFWGetNum(index={self.device_index})",
+                f"EFWGetNum(index={device_index})",
                 EFWErrorCode.EFW_ERROR_INVALID_INDEX,
                 "EFW_ERROR_INVALID_INDEX",
             )
 
-        efw_id = self.sdk.get_id(self.device_index)
-        self.efw_id = efw_id
-        self.info = None
-        self.state = DeviceState.CONNECTING
-        open_succeeded = False
+        efw_id = active_sdk.get_id(device_index)
+        active_sdk.open(efw_id)
         try:
-            self.sdk.open(efw_id)
-            open_succeeded = True
-
-            if self._cfg_unidirectional is not None:
-                self.sdk.set_direction(efw_id, self._cfg_unidirectional)
-            unidir = self.sdk.get_direction(efw_id)
+            if unidirectional is not None:
+                active_sdk.set_direction(efw_id, unidirectional)
+            unidir = active_sdk.get_direction(efw_id)
 
             deadline = time.monotonic() + timeout
             dev_name = ""
             slot_num = 0
             while True:
                 try:
-                    _, dev_name, slot_num = self.sdk.get_property(efw_id)
+                    _, dev_name, slot_num = active_sdk.get_property(efw_id)
                     if slot_num > 0:
-                        pos = self.sdk.get_position(efw_id)
+                        pos = active_sdk.get_position(efw_id)
                         if pos != -1:
                             if pos < 0 or pos >= slot_num:
                                 raise ZwoError(
@@ -162,7 +137,7 @@ class FilterWheel:
                         ) from e
                 time.sleep(poll_interval)
 
-            fw = self.sdk.get_firmware_version(efw_id)
+            fw = active_sdk.get_firmware_version(efw_id)
             info = EfwInfo(
                 id=efw_id,
                 name=dev_name,
@@ -170,23 +145,12 @@ class FilterWheel:
                 firmware_version=fw,
                 unidirectional=unidir,
             )
-            self.info = info
-            self.state = DeviceState.READY
-            return info
+            return FilterWheel(device_index=device_index, efw_id=efw_id, info=info, sdk=active_sdk)
         except BaseException as init_exc:
-            self.info = None
-            if open_succeeded:
-                try:
-                    self.sdk.close(efw_id)
-                except BaseException as close_exc:
-                    self.state = DeviceState.UNKNOWN
-                    attach_rollback_error(init_exc, efw_id, close_exc)
-                else:
-                    self.efw_id = None
-                    self.state = DeviceState.DISCONNECTED
-            else:
-                self.efw_id = None
-                self.state = DeviceState.DISCONNECTED
+            try:
+                active_sdk.close(efw_id)
+            except BaseException as close_exc:
+                attach_rollback_error(init_exc, efw_id, close_exc)
             raise
 
     def close(self) -> None:
@@ -204,64 +168,7 @@ class FilterWheel:
         self.efw_id = None
         self.state = DeviceState.DISCONNECTED
 
-    def reconcile(self) -> EfwInfo:
-        """Re-query live physical hardware state to recover from FAULT state.
-
-        Only transitions ``self.state`` back to ``DeviceState.READY`` if the wheel reports a
-        valid ``slot_num > 0`` and a settled slot position ``0 <= pos < slot_num`` (not ``-1``).
-        """
-        if self.state == DeviceState.UNKNOWN:
-            raise ZwoError(
-                "FilterWheel connection state is UNKNOWN after failed close; call close() to recover",
-                EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                "EFW_ERROR_ERROR_STATE",
-            )
-        if self.efw_id is None or self.state == DeviceState.DISCONNECTED:
-            raise ZwoError("FilterWheel", EFWErrorCode.EFW_ERROR_CLOSED, "EFW_ERROR_CLOSED")
-
-        efw_id = self.efw_id
-        try:
-            _, dev_name, slot_num = self.sdk.get_property(efw_id)
-            if slot_num <= 0:
-                self.state = DeviceState.FAULT
-                raise ZwoError(
-                    f"EFWGetProperty({efw_id}) reported slot_num={slot_num} during reconcile",
-                    EFWErrorCode.EFW_ERROR_MOVING,
-                    "EFW_ERROR_MOVING",
-                )
-            pos = self.sdk.get_position(efw_id)
-            if pos == -1:
-                self.state = DeviceState.FAULT
-                raise ZwoError(
-                    f"EFWGetPosition({efw_id}) reported wheel still moving (-1) during reconcile",
-                    EFWErrorCode.EFW_ERROR_MOVING,
-                    "EFW_ERROR_MOVING",
-                )
-            if pos < 0 or pos >= slot_num:
-                self.state = DeviceState.FAULT
-                raise ZwoError(
-                    f"EFWGetPosition({efw_id}) reported invalid slot {pos} during reconcile",
-                    EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                    "EFW_ERROR_ERROR_STATE",
-                )
-            unidir = self.sdk.get_direction(efw_id)
-            fw = self.sdk.get_firmware_version(efw_id)
-            info = EfwInfo(
-                id=efw_id,
-                name=dev_name,
-                slot_num=slot_num,
-                firmware_version=fw,
-                unidirectional=unidir,
-            )
-            self.info = info
-            self.state = DeviceState.READY
-            return info
-        except BaseException as exc:
-            self._record_op_error(exc)
-            raise
-
     def __enter__(self) -> FilterWheel:
-        self.open()
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -276,7 +183,7 @@ class FilterWheel:
             )
         if self.state == DeviceState.FAULT:
             raise ZwoError(
-                "FilterWheel is in FAULT state; reconcile() or close() and reopen required",
+                "FilterWheel is in FAULT state; close() and reopen required",
                 EFWErrorCode.EFW_ERROR_ERROR_STATE,
                 "EFW_ERROR_ERROR_STATE",
             )
