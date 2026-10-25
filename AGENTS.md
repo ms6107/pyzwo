@@ -5,11 +5,11 @@
 ## Architectural Boundaries
 - **`pyzwo` scope:** Path-based USB HID transport (`ZwoHid` in `pyzwo/hid.py`), device controllers (`Efw` and `EfwStatus` in `pyzwo/efw.py`), and `ZwoError` / `ZwoQueryCollisionError`.
 - **No proprietary vendor shared libraries:** Communicate directly via USB HID feature reports (`hid`). Do not add `pyobs`, `numpy`, or framework dependencies to `pyproject.toml`.
-- **1-based EFW slots:** Slot indices are `1..slot_count` (matching both physical wheel markings and the HID wire protocol), with `-1` indicating the wheel is currently moving.
+- **1-based EFW slots:** Slot indices are `1..slot_count` (matching both physical wheel markings and the HID wire protocol), with `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
 
 ## Concurrency & Deadlines
 - **Persistent handle & serialized lifecycle:** `ZwoHid(path)` opens the `hid.Device` on construction and holds it open until `close()` (or context-manager exit), serializing `discover()`, `__init__()`, and `close()` with a module-level lock per `hidapi` thread-safety rules.
-- **Single-owner synchronous baseline:** Synchronous methods (`get_status`, `move_to_slot`) assume a single caller per physical wheel at a time. `move_to_slot` raises built-in `TimeoutError` if the wheel does not settle before `timeout`.
+- **Single-owner synchronous baseline:** Synchronous methods (`get_status`, `move_to_slot`, `calibrate`) assume a single caller per physical wheel at a time. `move_to_slot` and `calibrate` raise built-in `TimeoutError` if the wheel does not settle before `timeout`.
 
 ## Testing & Hardware Safety
 - Default unit tests (`tests/test_efw.py`) mock `sys.modules["hid"]` and must pass without physical hardware connected.

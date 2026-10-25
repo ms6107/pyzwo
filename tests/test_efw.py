@@ -142,12 +142,21 @@ class TestEfw(unittest.TestCase):
         self.assertEqual(backend.close_count, 1)
         self.assertEqual(backend.sent_reports, [b"\x03\x7e\x5a\x02\x01".ljust(16, b"\x00")])
 
-    def test_get_status_moving_returns_minus_one(self) -> None:
-        cases = [
-            ("state_zero", _status_report(state=0x00, slots=(0, 0, 0))),
-            ("sensor_mismatch", _status_report(state=0x01, slots=(2, 3, 3))),
+    def test_get_status_calibrating_and_moving_return_minus_one(self) -> None:
+        calibrating_cases = [
+            ("calibrating_power_on", _status_report(state=0x00, slots=(0, 0, 0), slot_count=0)),
+            ("calibrating_magnet_counter", _status_report(state=0x00, slots=(3, 3, 3), slot_count=2)),
         ]
-        for label, report in cases:
+        for label, report in calibrating_cases:
+            with self.subTest(case=label), FakeHidBackend(status_replies=[report]), Efw(DEV_PATH) as wheel:
+                self.assertEqual(wheel.get_status(), EfwStatus(slot_count=-1, slot=-1))
+
+        moving_cases = [
+            ("rotating_between_slots", _status_report(state=0x04, slots=(6, 2, 3))),
+            ("fine_damping_at_target", _status_report(state=0x04, slots=(6, 6, 6))),
+            ("inter_command_handoff", _status_report(state=0x01, slots=(2, 3, 3))),
+        ]
+        for label, report in moving_cases:
             with self.subTest(case=label), FakeHidBackend(status_replies=[report]), Efw(DEV_PATH) as wheel:
                 self.assertEqual(wheel.get_status(), EfwStatus(slot_count=SLOT_COUNT, slot=-1))
 
@@ -179,8 +188,9 @@ class TestEfw(unittest.TestCase):
     def test_query_raises_collision_error_after_exhausting_retries(self) -> None:
         other_reply = b"\x01\x7e\x5a\x04".ljust(17, b"\x00")
         with FakeHidBackend(status_replies=[other_reply]) as backend:
-            with self.assertRaises(ZwoQueryCollisionError), Efw(DEV_PATH) as wheel:
+            with self.assertRaises(ZwoError) as ctx, Efw(DEV_PATH) as wheel:
                 wheel.get_status()
+            self.assertIsInstance(ctx.exception, ZwoQueryCollisionError)
             self.assertEqual(len(backend.sent_reports), 3)
             self.assertEqual(backend.open_count, 1)
             self.assertEqual(backend.close_count, 1)
@@ -206,23 +216,33 @@ class TestEfw(unittest.TestCase):
             for bad_timeout in (0.0, -1.0, math.nan, math.inf):
                 with self.subTest(timeout=bad_timeout), self.assertRaises(ValueError):
                     wheel.move_to_slot(1, timeout=bad_timeout)
+                with self.subTest(calibrate_timeout=bad_timeout), self.assertRaises(ValueError):
+                    wheel.calibrate(timeout=bad_timeout)
 
             for bad_slot in (0, -1, SLOT_COUNT + 1):
                 with self.subTest(slot=bad_slot), self.assertRaises(ValueError):
                     wheel.move_to_slot(bad_slot)
 
-    def test_move_to_slot_rejects_when_already_moving(self) -> None:
-        with FakeHidBackend(status_replies=[_status_report(state=0x00, slots=(0, 0, 0))]) as backend:
-            with self.assertRaises(ZwoError), Efw(DEV_PATH) as wheel:
-                wheel.move_to_slot(2)
-            self.assertEqual(len(backend.sent_reports), 1)
+    def test_move_to_slot_and_calibrate_reject_when_already_moving_or_calibrating(self) -> None:
+        busy_reports = [
+            ("calibrating", _status_report(state=0x00, slots=(3, 3, 3), slot_count=1)),
+            ("rotating", _status_report(state=0x04, slots=(6, 2, 3))),
+        ]
+        for label, report in busy_reports:
+            with self.subTest(case=label), FakeHidBackend(status_replies=[report]) as backend:
+                with Efw(DEV_PATH) as wheel:
+                    with self.assertRaises(ZwoError):
+                        wheel.move_to_slot(5)
+                    with self.assertRaises(ZwoError):
+                        wheel.calibrate()
+                self.assertEqual(len(backend.sent_reports), 2)
 
     def test_move_to_slot_bidirectional_and_unidirectional(self) -> None:
         for unidirectional, expected_dir in ((False, 0x02), (True, 0x03)):
             with self.subTest(unidirectional=unidirectional):
                 replies = [
                     _status_report(slots=(1, 1, 1)),
-                    _status_report(state=0x00, slots=(0, 0, 0)),
+                    _status_report(state=0x04, slots=(6, 2, 3)),
                     _status_report(slots=(6, 6, 6)),
                 ]
                 with (
@@ -240,19 +260,50 @@ class TestEfw(unittest.TestCase):
                 self.assertEqual(backend.open_count, 1)
                 self.assertEqual(backend.close_count, 1)
 
-    def test_move_to_slot_timeout_raises_builtin_timeout_error(self) -> None:
+    def test_calibrate_sends_command_and_polls_until_settled(self) -> None:
+        replies = [
+            _status_report(slots=(3, 3, 3)),
+            _status_report(state=0x00, slots=(3, 3, 3), slot_count=2),
+            _status_report(state=0x00, slots=(1, 3, 1), slot_count=SLOT_COUNT),
+            _status_report(slots=(1, 1, 1)),
+        ]
+        with (
+            FakeHidBackend(status_replies=replies) as backend,
+            patch("pyzwo.efw.time.sleep"),
+            Efw(DEV_PATH) as wheel,
+        ):
+            settled = wheel.calibrate()
+
+        self.assertEqual(settled, 1)
+        self.assertEqual(
+            backend.sent_reports[1],
+            b"\x03\x7e\x5a\x01\x01".ljust(16, b"\x00"),
+        )
+        self.assertEqual(backend.open_count, 1)
+        self.assertEqual(backend.close_count, 1)
+
+    def test_move_to_slot_and_calibrate_timeout_raise_builtin_timeout_error(self) -> None:
         replies = [
             _status_report(slots=(1, 1, 1)),
             _status_report(state=0x00, slots=(0, 0, 0)),
         ]
         with (
-            FakeHidBackend(status_replies=replies),
+            FakeHidBackend(status_replies=list(replies)),
             patch("pyzwo.efw.time.sleep"),
             patch("pyzwo.efw.time.monotonic", side_effect=[0.0, 1.0]),
             self.assertRaises(TimeoutError),
             Efw(DEV_PATH) as wheel,
         ):
             wheel.move_to_slot(4, timeout=0.5)
+
+        with (
+            FakeHidBackend(status_replies=list(replies)),
+            patch("pyzwo.efw.time.sleep"),
+            patch("pyzwo.efw.time.monotonic", side_effect=[0.0, 1.0]),
+            self.assertRaises(TimeoutError),
+            Efw(DEV_PATH) as wheel,
+        ):
+            wheel.calibrate(timeout=0.5)
 
 
 if __name__ == "__main__":

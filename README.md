@@ -20,12 +20,12 @@ Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWF
 
 Key behaviors in the synchronous EFW controller (`Efw`):
 - **Path-addressed, valid-by-construction handle:** `Efw(path)` opens the OS HID device node (discovered via `Efw.discover()` or a persistent `udev` symlink) on construction and holds the handle open until `close()` (or context-manager exit), avoiding the ~50 ms Linux `hidraw` open/close overhead and keeping per-device I/O off `hidapi`'s thread-unsafe open/close path.
-- **1-based slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `-1` indicating the wheel is currently in motion.
+- **1-based slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
 
 ## Concurrency, Deadlines & Limitations
 
 - **Single-owner per device:** `Efw` is synchronous and designed for a single owner per physical wheel at a time. `discover()`, `__init__()`, and `close()` are serialized across threads with a module-level lock because `hidapi`'s `hid_enumerate`, `hid_open_path`, and `hid_close` share unsynchronized global state; once opened, separate `ZwoHid` instances for different physical devices can perform I/O in separate threads.
-- **Polling deadlines vs. blocking USB I/O:** The `timeout` argument on `move_to_slot()` is a **Python-level monotonic polling deadline** checked between status queries, raising built-in `TimeoutError` if the wheel does not settle in time. Individual synchronous `hidapi` calls have no pre-emptive timeout if the kernel or USB stack blocks.
+- **Polling deadlines vs. blocking USB I/O:** The `timeout` argument on `move_to_slot()` and `calibrate()` is a **Python-level monotonic polling deadline** checked between status queries, raising built-in `TimeoutError` if the wheel does not settle in time. Individual synchronous `hidapi` calls have no pre-emptive timeout if the kernel or USB stack blocks.
 
 ## Device classes & roadmap
 
