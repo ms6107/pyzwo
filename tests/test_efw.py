@@ -379,7 +379,7 @@ class TestEfwClientUnit(unittest.TestCase):
             self.assertEqual(fake.move_attempts, [])
             self.assertEqual(fake.moves, [])
 
-    def test_move_to_slot_timeout_leaves_state_busy(self) -> None:
+    def test_move_to_slot_timeout_raises(self) -> None:
         initial_slot = 2
         target_slot = 3
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=initial_slot)
@@ -387,7 +387,7 @@ class TestEfwClientUnit(unittest.TestCase):
             fake.stuck_moving = True
             with self.assertRaises(ZwoTimeoutError):
                 wheel.move_to_slot(target_slot, timeout=0.01)
-            self.assertEqual(wheel.state, DeviceState.BUSY)
+            self.assertEqual(wheel.state, DeviceState.READY)
 
     def test_calibrate_polls_until_settled(self) -> None:
         initial_slot = 3
@@ -401,13 +401,13 @@ class TestEfwClientUnit(unittest.TestCase):
             self.assertEqual(wheel.get_slot(), calibrated_slot)
             self.assertEqual(wheel.state, DeviceState.READY)
 
-    def test_calibrate_timeout_leaves_state_busy(self) -> None:
+    def test_calibrate_timeout_raises(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=3)
         with EFW.open(sdk=fake) as wheel:
             fake.stuck_moving = True
             with self.assertRaises(ZwoTimeoutError):
                 wheel.calibrate(timeout=0.01)
-            self.assertEqual(wheel.state, DeviceState.BUSY)
+            self.assertEqual(wheel.state, DeviceState.READY)
 
     def test_removed_error_transitions_to_fault(self) -> None:
         fake = FakeEfwSDK(slot_num=SLOT_COUNT, initial_slot=1)

@@ -147,21 +147,15 @@ class FilterWheel:
         self.close()
 
     def _require_id(self) -> int:
-        if self.state == DeviceState.UNKNOWN:
-            raise ZwoError(
-                "FilterWheel connection state is UNKNOWN; call close() to recover",
-                EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                "EFW_ERROR_ERROR_STATE",
-            )
-        if self.state == DeviceState.FAULT:
-            raise ZwoError(
-                "FilterWheel is in FAULT state; close() and reopen required",
-                EFWErrorCode.EFW_ERROR_ERROR_STATE,
-                "EFW_ERROR_ERROR_STATE",
-            )
+        if self.state == DeviceState.READY:
+            return self.efw_id
         if self.state == DeviceState.DISCONNECTED:
             raise ZwoError("FilterWheel", EFWErrorCode.EFW_ERROR_CLOSED, "EFW_ERROR_CLOSED")
-        return self.efw_id
+        raise ZwoError(
+            f"FilterWheel is in {self.state.value} state; close() and reopen required",
+            EFWErrorCode.EFW_ERROR_ERROR_STATE,
+            "EFW_ERROR_ERROR_STATE",
+        )
 
     def _record_op_error(self, exc: BaseException) -> None:
         if isinstance(exc, ZwoError) and exc.code == EFWErrorCode.EFW_ERROR_REMOVED:
@@ -173,7 +167,6 @@ class FilterWheel:
         while True:
             pos = self.get_slot()
             if pos != -1:
-                self.state = DeviceState.READY
                 return (pos, moving_polls)
             moving_polls += 1
             if time.monotonic() >= deadline:
@@ -218,7 +211,6 @@ class FilterWheel:
         if cur == slot:
             return (slot, 0)
 
-        self.state = DeviceState.BUSY
         try:
             self.sdk.set_position(efw_id, slot)
         except BaseException as exc:
@@ -233,7 +225,6 @@ class FilterWheel:
         """Run full hardware calibration (``EFWCalibrate``) and wait until settled."""
         validate_timeout(timeout)
         efw_id = self._require_id()
-        self.state = DeviceState.BUSY
         try:
             self.sdk.calibrate(efw_id)
         except BaseException as exc:

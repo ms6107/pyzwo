@@ -24,7 +24,6 @@ class DeviceState(StrEnum):
 
     DISCONNECTED = "disconnected"
     READY = "ready"
-    BUSY = "busy"
     FAULT = "fault"
     UNKNOWN = "unknown"
 
