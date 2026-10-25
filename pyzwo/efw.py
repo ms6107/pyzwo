@@ -13,9 +13,8 @@ from dataclasses import dataclass
 
 from .hid import ZwoError, ZwoHid
 
-# Status query (02 01) and reply (01) decoding
+# Status query (02 01) and reply decoding
 _CMD_GET_STATUS = b"\x02\x01"
-_REPLY_STATUS = 0x01
 _STATE_SETTLED = 0x01
 _STATE_ERROR = 0x06
 _DUAL_DISC_OFFSET = 12
@@ -44,18 +43,18 @@ class Efw(ZwoHid):
     def get_status(self) -> EfwStatus:
         """Return EfwStatus(slot_count, slot), where slot is 1..slot_count or -1 while moving."""
         reply = self._query(_CMD_GET_STATUS)
-        reply_type, state, error_code, *last_observed_slots, slot_count = reply[3:10]
-        if reply_type != _REPLY_STATUS:
-            raise ZwoError(f"Unexpected EFW status reply type 0x{reply_type:02x}: {reply.hex(' ')}")
+        # (prev_slot, next_slot) is the bounding slot pair of the current carousel position:
+        # (N, N) when centered over slot N, or (N, N + 1) / (slot_count, 1) when between slots
+        # (ordered by slot number, independent of CW/CCW rotation direction).
+        state, error_code, target_slot, prev_slot, next_slot, slot_count = reply[4:10]
         if reply[_DUAL_DISC_OFFSET] != 0:
             raise ZwoError(f"Dual-disc EFW format not supported: {reply.hex(' ')}")
         if state == _STATE_ERROR:
             raise ZwoError(f"EFW hardware error (code={error_code}): {reply.hex(' ')}")
         if not (1 <= slot_count <= _MAX_SLOTS):
             raise ZwoError(f"Invalid EFW slot_count={slot_count}: {reply.hex(' ')}")
-        slot = last_observed_slots[0]
-        if state == _STATE_SETTLED and len(set(last_observed_slots)) == 1 and 1 <= slot <= slot_count:
-            return EfwStatus(slot_count=slot_count, slot=slot)
+        if state == _STATE_SETTLED and target_slot == prev_slot == next_slot and 1 <= target_slot <= slot_count:
+            return EfwStatus(slot_count=slot_count, slot=target_slot)
         return EfwStatus(slot_count=slot_count, slot=-1)
 
     def move_to_slot(

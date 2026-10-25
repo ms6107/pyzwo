@@ -70,11 +70,11 @@ class ZwoHid:
             device.send_feature_report(report)
 
     def _query(self, payload: bytes) -> bytes:
-        """Open device, send [03 7e 5a <payload>...], read 17-byte [01 7e 5a ...] reply, and close."""
+        """Open device, send [03 7e 5a <payload>...], read 17-byte [01 7e 5a <selector>...] reply, and close."""
         report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
         with _open_hid(self._raw_path) as device:
             device.send_feature_report(report)
             reply = bytes(device.get_feature_report(_REPLY_REPORT_ID, _REPLY_LEN))
-        if not reply.startswith(_REPLY_HEADER):
+        if reply[:4] != _REPLY_HEADER + payload[-1:]:
             raise ZwoError(f"Unexpected HID reply for {payload.hex(' ')}: {reply.hex(' ')}")
         return reply

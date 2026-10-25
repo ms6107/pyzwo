@@ -27,9 +27,27 @@ def _status_report(
     slot_count: int = SLOT_COUNT,
     dual_disc: int = 0x00,
 ) -> bytes:
-    slot_a, slot_b, slot_c = slots
+    target_slot, prev_slot, next_slot = slots
     return bytes(
-        (0x01, 0x7E, 0x5A, 0x01, state, error_code, slot_a, slot_b, slot_c, slot_count, 0, 0, dual_disc, 0, 0, 0, 0)
+        (
+            0x01,
+            0x7E,
+            0x5A,
+            0x01,
+            state,
+            error_code,
+            target_slot,
+            prev_slot,
+            next_slot,
+            slot_count,
+            0,
+            0,
+            dual_disc,
+            0,
+            0,
+            0,
+            0,
+        )
     )
 
 
