@@ -39,6 +39,7 @@ class TestEfwHardware(unittest.IsolatedAsyncioTestCase):
                 os.symlink(path, link_path)
                 for target_path in (path, link_path):
                     async with await Efw.open(target_path) as wheel:
+                        self.assertNotEqual(await wheel.get_firmware_version(), (0, 0, 0))
                         status = await wheel.get_status()
                         self.assertTrue(1 <= status.slot_count <= 16)
                         self.assertTrue(1 <= status.slot <= status.slot_count)

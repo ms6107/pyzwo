@@ -21,7 +21,6 @@ _MAX_SLOTS = 16
 
 # Action commands (01 <subcmd> ...)
 _CMD_CALIBRATE = b"\x01\x01"
-_CMD_CLEAR_ERROR = b"\x01\x0f"
 _CMD_MOVE = 0x01
 _DIR_BIDIRECTIONAL = 0x02
 _DIR_UNIDIRECTIONAL = 0x03
@@ -101,7 +100,3 @@ class Efw(ZwoHidDevice[EfwStatus]):
 
         await self._send(_CMD_CALIBRATE)
         return (await self._wait_until_settled(timeout, "calibrate()")).slot
-
-    async def clear_error(self) -> None:
-        """Send a fire-and-forget command (`01 0f`) to clear latched MCU hardware error state (`0x06`)."""
-        await self._send(_CMD_CLEAR_ERROR)

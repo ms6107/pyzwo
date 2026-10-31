@@ -214,21 +214,20 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
         with FakeEafHidBackend():
             self.assertEqual(await Eaf.discover(), ["/dev/hidraw14", "/dev/hidraw15"])
 
-    async def test_open_reads_firmware_and_model_for_legacy_and_modern_versions(self) -> None:
+    async def test_open_reads_firmware_for_legacy_and_modern_versions(self) -> None:
         cases = [
-            ("legacy_3_2_2", (3, 2, 2), b"\x00EAF-0-0\x00", "EAF-0-0", 60_000),
-            ("legacy_boundary_3_3_5", (3, 3, 5), b"\x00EAF-S-0\x00", "EAF-S-0", 60_000),
-            ("modern_3_3_7", (3, 3, 7), b"EEAF-S-0\x00", "EEAF-S-0", 600_000),
+            ("legacy_3_2_2", (3, 2, 2), 60_000),
+            ("legacy_boundary_3_3_5", (3, 3, 5), 60_000),
+            ("modern_3_3_7", (3, 3, 7), 600_000),
         ]
-        for label, version, model_raw, expected_model, expected_range in cases:
+        for label, version, expected_range in cases:
             with (
                 self.subTest(case=label),
-                FakeEafHidBackend(replies=[_firmware_report(version=version, model_raw=model_raw)]) as backend,
+                FakeEafHidBackend(replies=[_firmware_report(version=version)]) as backend,
             ):
                 async with await Eaf.open(DEV_PATH) as focuser:
                     self.assertEqual(focuser.path, DEV_PATH)
                     self.assertEqual(focuser.firmware_version, version)
-                    self.assertEqual(focuser.model, expected_model)
                     self.assertEqual(focuser.step_range, expected_range)
                 await focuser.close()  # idempotent second close
 

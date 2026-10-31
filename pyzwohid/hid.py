@@ -34,6 +34,8 @@ _REPLY_LEN = 17
 _MIN_REPLY_LEN = 16
 _QUERY_ATTEMPTS = 3
 _POLL_INTERVAL_S = 0.2
+_CMD_GET_FIRMWARE = b"\x02\x04"
+_CMD_CLEAR_ERROR = b"\x01\x0f"
 
 # All hidapi calls execute on a single dedicated worker thread so that hid_init,
 # hid_enumerate, hid_open_path, hid_close, and per-device feature-report I/O never
@@ -208,6 +210,18 @@ class ZwoHidDevice(Generic[_StatusT]):
         (Verified on Linux `hidraw` only so far; macOS/Windows HID backends are untested.)
         """
         return await _run_in_executor(self._query_sync, payload)
+
+    async def get_firmware_version(self) -> tuple[int, int, int]:
+        """Query (`02 04`) and return the `(major, minor, build)` firmware version."""
+        reply = await self._query(_CMD_GET_FIRMWARE)
+        major, minor, build = reply[4:7]
+        if (major, minor, build) == (0, 0, 0):
+            raise ZwoError(f"Invalid firmware version 0.0.0: {reply.hex(' ')}")
+        return (major, minor, build)
+
+    async def clear_error(self) -> None:
+        """Send a fire-and-forget command (`01 0f`) to clear latched MCU hardware error state (`0x06`)."""
+        await self._send(_CMD_CLEAR_ERROR)
 
     async def get_status(self) -> _StatusT:
         """Query and return the current device status snapshot."""

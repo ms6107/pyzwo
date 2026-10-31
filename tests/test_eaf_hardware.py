@@ -39,7 +39,7 @@ class TestEafHardware(unittest.IsolatedAsyncioTestCase):
                 for target_path in (path, link_path):
                     async with await Eaf.open(target_path) as focuser:
                         self.assertIn(focuser.step_range, (60_000, 600_000))
-                        self.assertTrue(focuser.model)
+                        self.assertNotEqual(focuser.firmware_version, (0, 0, 0))
                         status = await focuser.get_status()
                         self.assertTrue(1 <= status.max_step <= focuser.step_range)
                         self.assertTrue(0 <= status.step <= status.max_step)

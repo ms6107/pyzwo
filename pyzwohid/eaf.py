@@ -12,8 +12,7 @@ from typing import Any, Self
 
 from .hid import ZwoError, ZwoHidDevice, ZwoHidStatus, _validate_timeout
 
-# Firmware query (02 04) and coordinate-width split (fw <= 3.3.5 vs fw > 3.3.5)
-_CMD_GET_FIRMWARE = b"\x02\x04"
+# Coordinate-width split (fw <= 3.3.5 vs fw > 3.3.5)
 _LEGACY_FW_LIMIT = (3, 3, 5)
 _LEGACY_STEP_RANGE = 60_000
 _MODERN_STEP_RANGE = 600_000
@@ -24,13 +23,12 @@ _STATE_SETTLED = 0x00
 _STATE_MOVING = 0x01
 _STATE_ERROR = 0x06
 
-# Master control frame (03 <run> <backlash> <b6..b9> <opcode> 00 00 <flags> <max_hi..lo>) and actions
+# Master control frame (03 <run> <backlash> <b6..b9> <opcode> 00 00 <flags> <max_hi..lo>)
 _CMD_CONTROL = 0x03
 _RUN_STOP = 0x00
 _RUN_MOVE = 0x01
 _OPCODE_MOVE_OR_STOP = 0x00
 _OPCODE_RESET_POSITION = 0x01
-_CMD_CLEAR_ERROR = b"\x01\x0f"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,27 +55,21 @@ class Eaf(ZwoHidDevice[EafStatus]):
         path: str,
         device: Any,
         firmware_version: tuple[int, int, int],
-        model: str,
     ) -> None:
         super().__init__(path, device)
         self.firmware_version = firmware_version
-        self.model = model
         self.step_range = _MODERN_STEP_RANGE if firmware_version > _LEGACY_FW_LIMIT else _LEGACY_STEP_RANGE
 
     @classmethod
     async def open(cls, path: str) -> Self:
-        """Verify and open the EAF at `path`, reading its firmware version and model."""
+        """Verify and open the EAF at `path`, reading its firmware version."""
         transport = ZwoHidDevice[EafStatus](path, await cls._open_handle(path))
         try:
-            reply = await transport._query(_CMD_GET_FIRMWARE)
-            major, minor, build = reply[4:7]
-            if major == 0 and minor == 0 and build == 0:
-                raise ZwoError(f"Invalid EAF firmware version 0.0.0: {reply.hex(' ')}")
-            model = reply[7:16].lstrip(b"\x00").split(b"\x00", 1)[0].decode("ascii", errors="replace")
+            firmware_version = await transport.get_firmware_version()
         except BaseException:
             await transport.close()
             raise
-        return cls(path, transport._device, (major, minor, build), model)
+        return cls(path, transport._device, firmware_version)
 
     async def _read_status_report(self) -> tuple[EafStatus, bytes]:
         reply = await self._query(_CMD_GET_STATUS)
@@ -150,7 +142,3 @@ class Eaf(ZwoHidDevice[EafStatus]):
             raise ValueError(f"step={step} outside allowed range [0, {status.max_step}]")
 
         await self._send(self._build_control_payload(reply, run=_RUN_STOP, step=step, opcode=_OPCODE_RESET_POSITION))
-
-    async def clear_error(self) -> None:
-        """Send a fire-and-forget command (`01 0f`) to clear latched MCU hardware error state (`0x06`)."""
-        await self._send(_CMD_CLEAR_ERROR)
