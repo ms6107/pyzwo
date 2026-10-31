@@ -114,9 +114,10 @@ class Efw(ZwoHid):
     async def _wait_until_settled(self, timeout: float, operation: str) -> int:
         deadline = monotonic() + timeout
         while True:
-            await asyncio.sleep(_POLL_INTERVAL_S)
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"{operation} timed out after {timeout:.2f}s")
+            await asyncio.sleep(min(_POLL_INTERVAL_S, remaining))
             current_slot = (await self.get_status()).slot
             if current_slot != -1:
                 return current_slot
-            if monotonic() >= deadline:
-                raise TimeoutError(f"{operation} timed out after {timeout:.2f}s")

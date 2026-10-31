@@ -361,21 +361,23 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             FakeHidBackend(status_replies=list(replies)),
-            patch("pyzwo.efw.asyncio.sleep"),
-            patch("pyzwo.efw.monotonic", side_effect=[0.0, 1.0]),
+            patch("pyzwo.efw.asyncio.sleep") as mock_sleep,
+            patch("pyzwo.efw.monotonic", side_effect=[0.0, 0.0, 0.01]),
             self.assertRaises(TimeoutError),
         ):
             async with await Efw.open(DEV_PATH) as wheel:
-                await wheel.move_to_slot(4, timeout=0.5)
+                await wheel.move_to_slot(4, timeout=0.01)
+        mock_sleep.assert_awaited_once_with(0.01)
 
         with (
             FakeHidBackend(status_replies=list(replies)),
-            patch("pyzwo.efw.asyncio.sleep"),
-            patch("pyzwo.efw.monotonic", side_effect=[0.0, 1.0]),
+            patch("pyzwo.efw.asyncio.sleep") as mock_sleep,
+            patch("pyzwo.efw.monotonic", side_effect=[0.0, 0.0, 0.01]),
             self.assertRaises(TimeoutError),
         ):
             async with await Efw.open(DEV_PATH) as wheel:
-                await wheel.calibrate(timeout=0.5)
+                await wheel.calibrate(timeout=0.01)
+        mock_sleep.assert_awaited_once_with(0.01)
 
     async def test_clear_error_sends_command(self) -> None:
         with FakeHidBackend() as backend:
