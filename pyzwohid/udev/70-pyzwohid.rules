@@ -31,17 +31,19 @@
 #   for example:
 #     # ZWO EFW (03c3:1f01; legacy/other EFWs may use 1f01 or 1f02)
 #     SUBSYSTEM=="hidraw", KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", ATTRS{idProduct}=="1f01", GROUP="zwo", MODE="0660", TAG+="uaccess"
+#     # ZWO EAF (03c3:1f10)
+#     SUBSYSTEM=="hidraw", KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", ATTRS{idProduct}=="1f10", GROUP="zwo", MODE="0660", TAG+="uaccess"
 #
 # Optional persistent symlink pinned to a physical USB port:
-#   ZWO EFWs do not expose a unique USB descriptor serial number, and /dev/hidrawN
-#   indices can shift across reboots or USB replugs.
-#   1. Inspect the wheel's physical USB port path and udev properties:
+#   ZWO EFWs and legacy EAFs do not expose a unique USB descriptor serial number, and
+#   /dev/hidrawN indices can shift across reboots or USB replugs.
+#   1. Inspect the device's physical USB port path and udev properties:
 #        udevadm info /dev/hidraw0
-#   2. You can either pass systemd-udevd's built-in port symlink directly to Efw.open():
+#   2. You can either pass systemd-udevd's built-in port symlink directly to Efw.open() / Eaf.open():
 #        /dev/input/by-path/pci-0000:74:00.3-usb-0:2.3:1.0-hidraw
 #      or define a custom /dev/<name> symlink via SYMLINK+="..." matching ENV{ID_PATH}
 #      or the parent USB port KERNELS (e.g. "3-2.3"):
 #        SUBSYSTEM=="hidraw", KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", ATTRS{idProduct}=="1f01", KERNELS=="3-2.3", GROUP="zwo", MODE="0660", TAG+="uaccess", SYMLINK+="zwo-efw"
-#        SUBSYSTEM=="hidraw", KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", ATTRS{idProduct}=="1f01", ENV{ID_PATH}=="pci-0000:74:00.3-usb-0:2.3:1.0", GROUP="zwo", MODE="0660", TAG+="uaccess", SYMLINK+="zwo-efw"
+#        SUBSYSTEM=="hidraw", KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", ATTRS{idProduct}=="1f10", KERNELS=="3-2.4", GROUP="zwo", MODE="0660", TAG+="uaccess", SYMLINK+="zwo-eaf"
 
 SUBSYSTEM=="hidraw", KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="03c3", GROUP="zwo", MODE="0660", TAG+="uaccess"

@@ -1,8 +1,8 @@
 # pyzwohid
 
-`pyzwohid` is an independent, pure-Python interface to ZWO USB HID astronomy hardware (currently Electronic Filter Wheels, with EAF focusers planned next). It provides framework-agnostic device access and error reporting without requiring ZWO's proprietary C shared libraries. Integrations with observatory-control frameworks are maintained separately.
+`pyzwohid` is an independent, pure-Python interface to ZWO USB HID astronomy hardware (Electronic Filter Wheels and Electronic Automatic Focusers). It provides framework-agnostic device access and error reporting without requiring ZWO's proprietary C shared libraries. Integrations with observatory-control frameworks are maintained separately.
 
-> **Status:** Experimental asynchronous ZWO EFW (Electronic Filter Wheel) baseline.
+> **Status:** Experimental asynchronous ZWO EFW (Electronic Filter Wheel) and EAF (Electronic Automatic Focuser) baseline.
 
 ## Philosophy
 
@@ -14,18 +14,19 @@ It started for my own setup, but it's MPL-2.0-licensed and free to grab for main
 
 ## How it works
 
-Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWFilter.so` / `.dylib` / `.dll`), `pyzwohid` communicates directly with ZWO USB HID devices via `hid` (`hidapi`) in `pyzwohid/hid.py` (`ZwoHidDevice`) and exposes the filter wheel controller (`Efw` and `EfwStatus`) in `pyzwohid/efw.py`.
+Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWFilter.so` / `libEAFFocuser.so` / `.dylib` / `.dll`), `pyzwohid` communicates directly with ZWO USB HID devices via `hid` (`hidapi`) in `pyzwohid/hid.py` (`ZwoHidDevice`) and exposes the filter wheel controller (`Efw` and `EfwStatus`) in `pyzwohid/efw.py` and the focuser controller (`Eaf` and `EafStatus`) in `pyzwohid/eaf.py`.
 
 > **Note:** This is an initial USB HID implementation—the public API is **not yet stable** and will change as additional USB HID device classes are introduced.
 
-Key behaviors in the asynchronous EFW controller (`Efw`):
-- **Path-addressed, valid-by-construction handle:** `await Efw.open(path)` verifies the USB `(VID, PID)` and opens the OS HID device node (discovered via `await Efw.discover()` or a persistent `udev` symlink), holding the handle open until `await close()` (or `async with` exit) to avoid the ~50 ms Linux `hidraw` open/close overhead.
-- **1-based slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
+Key behaviors in the asynchronous controllers (`Efw` and `Eaf`):
+- **Path-addressed, valid-by-construction handle:** `await Efw.open(path)` and `await Eaf.open(path)` verify the USB `(VID, PID)` and open the OS HID device node (discovered via `await Efw.discover()` / `await Eaf.discover()` or a persistent `udev` symlink), holding the handle open until `await close()` (or `async with` exit) to avoid the ~50 ms Linux `hidraw` open/close overhead.
+- **1-based EFW slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
+- **Firmware-aware, state-preserving EAF control:** `await Eaf.open(path)` queries `02 04` once to read `firmware_version`, `model`, and `step_range` (`60,000` with 16-bit coordinates on `fw <= 3.3.5`, `600,000` with 24-bit coordinates on `fw > 3.3.5`). Motion and coordinate commands (`move`, `stop`, `reset_position`) preserve the focuser's live `backlash`, `speed`/`max_step`, and `flags` bytes from the `02 03` telemetry report rather than overwriting NVRAM settings on connect.
 
 ## Concurrency, Deadlines & Limitations
 
 - **Single-worker HID executor:** All `hidapi` C calls (`discover`, `open`, `close`, `_send`, `_query`) are dispatched onto a single shared `ThreadPoolExecutor(max_workers=1)` so `hidapi` operations never race on process-global state or on an open `hid_device` handle, while lightweight (~3–6 ms) feature-report transactions across multiple ZWO HID devices interleave cleanly between `asyncio.sleep()` polling intervals.
-- **Polling deadlines vs. blocking USB I/O:** The `timeout` argument on `move_to_slot()` and `calibrate()` is a **Python-level monotonic polling deadline** checked between status queries, raising built-in `TimeoutError` if the wheel does not settle in time. Individual `hidapi` calls have no pre-emptive timeout if the kernel or USB stack blocks.
+- **Polling deadlines vs. blocking USB I/O:** The `timeout` argument on `Efw.move_to_slot()`, `Efw.calibrate()`, `Eaf.move()`, and `Eaf.stop()` is a **Python-level monotonic polling deadline** checked between status queries, raising built-in `TimeoutError` if the device does not settle in time. Individual `hidapi` calls have no pre-emptive timeout if the kernel or USB stack blocks.
 
 ## Device classes & roadmap
 
@@ -33,7 +34,9 @@ Key behaviors in the asynchronous EFW controller (`Efw`):
   - [x] **ZWO EFW 7×2" (legacy revision, fw `3.0.6`, `03c3:1f01`)** — Verified on hardware (`openSUSE Tumbleweed x86_64`).
   - [ ] **ZWO EFW 7×2" II (USB Type-C revision, fw `3.5.2`, `03c3:1f01`)** — Untested with the new direct USB HID implementation.
   - [ ] Other slot variants (`5×2"`, `7×36mm`, `8×1.25"`, `Mini`) — Untested on hardware (uses the same USB HID protocol and dynamic `slot_count` discovery).
-- **EAF (Focusers, USB HID)** — **Planned next.**
+- **EAF (Focusers, USB HID `03c3:1f10`)** — **Implemented (asynchronous baseline).**
+  - [x] **ZWO EAF (`EAF-0-0`, fw `3.2.2`, `03c3:1f10`)** — Verified on hardware (`openSUSE Tumbleweed x86_64`).
+  - [ ] **ZWO EAF 24-bit firmware (`fw > 3.3.5`, `600,000` step range) / EAF Pro (USB mode)** — Untested on hardware.
 - **CAA (Rotators, USB HID)** — **Tentative** (no hardware on hand—at most an experimental/skeleton implementation unless contributed and verified by a CAA owner).
 
 ## Platform & architecture status
@@ -52,7 +55,7 @@ On Linux, `hidapi-hidraw` accesses only `/dev/hidraw*` nodes. Unlike the upstrea
 
 - **Attended desktop Linux sessions:** `TAG+="uaccess"` lets `systemd-logind` dynamically grant an ACL on the matching `/dev/hidraw*` node to the active local seat user (ordered at `70-` so it runs before `73-seat-late.rules`).
 - **Headless observatory services / daemons / SSH sessions:** Desktop seat ACLs (`uaccess`) do not apply when no local seat session is active. The rule assigns `GROUP="zwo", MODE="0660"` so only `root` and members of the `zwo` group can open the device node.
-- **Persistent USB port symlinks:** Because `/dev/hidrawN` indices can change across reboots and ZWO EFWs do not expose a unique USB descriptor serial number, you can pass `systemd-udevd`'s built-in `/dev/input/by-path/<ID_PATH>-hidraw` symlink directly to `await Efw.open(...)` or add a `SYMLINK+="..."` rule pinned to `KERNELS` / `ENV{ID_PATH}` in `70-pyzwohid.rules` (see examples in [`pyzwohid/udev/70-pyzwohid.rules`](pyzwohid/udev/70-pyzwohid.rules)).
+- **Persistent USB port symlinks:** Because `/dev/hidrawN` indices can change across reboots and legacy ZWO HID devices do not expose a unique USB descriptor serial number, you can pass `systemd-udevd`'s built-in `/dev/input/by-path/<ID_PATH>-hidraw` symlink directly to `await Efw.open(...)` / `await Eaf.open(...)` or add a `SYMLINK+="..."` rule pinned to `KERNELS` / `ENV{ID_PATH}` in `70-pyzwohid.rules` (see examples in [`pyzwohid/udev/70-pyzwohid.rules`](pyzwohid/udev/70-pyzwohid.rules)).
 
 To configure non-root access on a Linux host:
 
@@ -70,15 +73,23 @@ After adding a user to the `zwo` group, log out and log back in (or restart the 
 
 ```python
 import asyncio
-from pyzwohid import Efw
+from pyzwohid import Eaf, Efw
 
 
 async def main() -> None:
-    paths = await Efw.discover()
-    async with await Efw.open(paths[0]) as wheel:
-        status = await wheel.get_status()  # EfwStatus(slot_count=7, slot=1)
-        settled_slot = await wheel.move_to_slot(2, unidirectional=False, timeout=30.0)
-        print(f"Settled at slot {settled_slot}")
+    efw_paths = await Efw.discover()
+    if efw_paths:
+        async with await Efw.open(efw_paths[0]) as wheel:
+            status = await wheel.get_status()  # EfwStatus(slot_count=7, slot=1)
+            settled_slot = await wheel.move_to_slot(2, unidirectional=False, timeout=30.0)
+            print(f"EFW settled at slot {settled_slot}")
+
+    eaf_paths = await Eaf.discover()
+    if eaf_paths:
+        async with await Eaf.open(eaf_paths[0]) as focuser:
+            status = await focuser.get_status()  # EafStatus(step=30068, max_step=60000, moving=False)
+            settled_step = await focuser.move(status.step + 100, timeout=60.0)
+            print(f"EAF settled at step {settled_step}")
 
 
 asyncio.run(main())
@@ -99,13 +110,13 @@ uv run mypy pyzwohid tests
 
 ### Real-hardware tests (read-only vs. opt-in motion)
 
-When `70-pyzwohid.rules` and a physical ZWO EFW are installed locally:
+When `70-pyzwohid.rules` and physical ZWO EFW / EAF devices are installed locally:
 
-- **Read-only hardware test (`test_hardware_readonly_status`)** discovers connected wheels and verifies `get_status()` returns a settled 1-based slot `1 <= slot <= slot_count`:
+- **Read-only hardware tests (`test_hardware_readonly_status`)** discover connected EFW / EAF devices and verify `get_status()` returns valid settled telemetry:
   ```bash
   PYZWOHID_RUN_HARDWARE_TESTS=1 uv run python -m unittest discover -s tests -v
   ```
-- **Opt-in operational motion test (`test_hardware_move_next_slot_and_back`)** physically moves the wheel to `(slot % slot_count) + 1` and back to its starting slot, and requires explicit confirmation via `PYZWOHID_RUN_HARDWARE_MOTION_TESTS=1`:
+- **Opt-in operational motion tests (`test_hardware_move_next_slot_and_back`, `test_hardware_move_and_back`)** physically move the wheel or focuser and return it to its starting position, and require explicit confirmation via `PYZWOHID_RUN_HARDWARE_MOTION_TESTS=1`:
   ```bash
   PYZWOHID_RUN_HARDWARE_MOTION_TESTS=1 uv run python -m unittest discover -s tests -v
   ```
