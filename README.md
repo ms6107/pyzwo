@@ -87,7 +87,7 @@ async def main() -> None:
     eaf_paths = await Eaf.discover()
     if eaf_paths:
         async with await Eaf.open(eaf_paths[0]) as focuser:
-            status = await focuser.get_status()  # EafStatus(moving=False, step=30068, max_step=60000)
+            status = await focuser.get_status()  # EafStatus(moving=False, step=30068, max_step=60000, ...)
             settled_step = await focuser.move(status.step + 100, timeout=60.0)
             print(f"EAF settled at step {settled_step}")
 

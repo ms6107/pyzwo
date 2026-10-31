@@ -44,6 +44,10 @@ class TestEafHardware(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(1 <= status.max_step <= focuser.step_range)
                         self.assertTrue(0 <= status.step <= status.max_step)
                         self.assertFalse(status.moving)
+                        self.assertTrue(0 <= status.backlash <= 255)
+                        self.assertTrue(0 <= status.max_force <= 15)
+                        if status.temperature_c is not None:
+                            self.assertTrue(-200.0 < status.temperature_c < 355.35)
 
     @unittest.skipUnless(
         os.environ.get("PYZWOHID_RUN_HARDWARE_MOTION_TESTS") == "1",

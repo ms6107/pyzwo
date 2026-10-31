@@ -22,6 +22,11 @@ _CMD_GET_STATUS = b"\x02\x03"
 _STATE_SETTLED = 0x00
 _STATE_MOVING = 0x01
 _STATE_ERROR = 0x06
+_TEMP_OFFSET = 30_000
+_TEMP_SCALE = 100.0
+_MIN_VALID_RAW_TEMP = 10_000
+_FLAG_BEEP = 0x01
+_FLAG_REVERSE = 0x02
 
 # Master control frame (03 <run> <backlash> <b6..b9> <opcode> 00 00 <flags> <max_hi..lo>)
 _CMD_CONTROL = 0x03
@@ -33,16 +38,26 @@ _OPCODE_RESET_POSITION = 0x01
 
 @dataclass(frozen=True, slots=True)
 class EafStatus(ZwoHidStatus):
-    """Snapshot of EAF status from a single 0x03 status report.
+    """Snapshot of EAF status and telemetry from a single 0x03 status report.
 
     Attributes:
         moving: True while the focuser is moving.
         step: Current focuser position in steps (0..max_step).
         max_step: Configured maximum step limit (1..step_range).
+        temperature_c: Probe temperature in degrees Celsius, or None if disconnected.
+        backlash: Configured backlash compensation in steps (0..255).
+        reverse: True if stepper motor direction is reversed.
+        beep: True if the motion buzzer is enabled.
+        max_force: Configured motor torque / holding force level (0..15).
     """
 
     step: int
     max_step: int
+    temperature_c: float | None
+    backlash: int
+    reverse: bool
+    beep: bool
+    max_force: int
 
 
 class Eaf(ZwoHidDevice[EafStatus]):
@@ -73,7 +88,7 @@ class Eaf(ZwoHidDevice[EafStatus]):
 
     async def _read_status_report(self) -> tuple[EafStatus, bytes]:
         reply = await self._query(_CMD_GET_STATUS)
-        state = reply[4]
+        state, backlash = reply[4:6]
         if state == _STATE_ERROR:
             raise ZwoError(f"EAF hardware error: {reply.hex(' ')}")
         if state not in (_STATE_SETTLED, _STATE_MOVING):
@@ -91,10 +106,23 @@ class Eaf(ZwoHidDevice[EafStatus]):
         if not (0 <= step <= max_step):
             raise ZwoError(f"Invalid EAF step={step} (max_step={max_step}): {reply.hex(' ')}")
 
-        return EafStatus(moving=state == _STATE_MOVING, step=step, max_step=max_step), reply
+        raw_temp = int.from_bytes(reply[11:13], "big")
+        temperature_c = (raw_temp - _TEMP_OFFSET) / _TEMP_SCALE if _MIN_VALID_RAW_TEMP < raw_temp < 0xFFFF else None
+        flags = reply[13]
+        status = EafStatus(
+            moving=state == _STATE_MOVING,
+            step=step,
+            max_step=max_step,
+            temperature_c=temperature_c,
+            backlash=backlash,
+            reverse=bool(flags & _FLAG_REVERSE),
+            beep=bool(flags & _FLAG_BEEP),
+            max_force=flags >> 4,
+        )
+        return status, reply
 
     async def get_status(self) -> EafStatus:
-        """Return EafStatus(moving, step, max_step) from a 0x03 status report."""
+        """Return EafStatus from a 0x03 status report."""
         status, _ = await self._read_status_report()
         return status
 
