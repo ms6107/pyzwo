@@ -21,7 +21,7 @@ Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWF
 Key behaviors in the asynchronous controllers (`Efw` and `Eaf`):
 - **Path-addressed, valid-by-construction handle:** `await Efw.open(path)` and `await Eaf.open(path)` verify the USB `(VID, PID)` and open the OS HID device node (discovered via `await Efw.discover()` / `await Eaf.discover()` or a persistent `udev` symlink), holding the handle open until `await close()` (or `async with` exit) to avoid the ~50 ms Linux `hidraw` open/close overhead.
 - **1-based EFW slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `moving=True` and `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
-- **Firmware-aware, state-preserving EAF control:** `await Eaf.open(path)` calls `get_firmware_version()` (`02 04`) once on open to determine `firmware_version` and `step_range` (`60,000` with 16-bit coordinates on `fw <= 3.3.5`, `600,000` with 24-bit coordinates on `fw > 3.3.5`). Motion and coordinate commands (`move`, `stop`, `reset_position`) preserve the focuser's live `backlash`, `speed`/`max_step`, and `flags` bytes from the `02 03` telemetry report rather than overwriting NVRAM settings on connect.
+- **Firmware-aware, state-preserving EAF control:** `await Eaf.open(path)` calls `get_firmware_version()` (`02 04`) once on open to determine `firmware_version` and `step_range` (`60,000` with 16-bit coordinates on `fw <= 3.3.5`, `600_000` with 24-bit coordinates on `fw > 3.3.5`). Motion, coordinate, and configuration commands (`move`, `stop`, `reset_position`, `configure`) preserve the focuser's live `backlash`, `speed`/`max_step`, and `flags` bytes from the `02 03` telemetry report rather than overwriting NVRAM settings on connect.
 
 ## Concurrency, Deadlines & Limitations
 
@@ -35,7 +35,7 @@ Key behaviors in the asynchronous controllers (`Efw` and `Eaf`):
   - [ ] **ZWO EFW 7×2" II (USB Type-C revision, fw `3.5.2`, `03c3:1f01`)** — Untested with the new direct USB HID implementation.
   - [ ] Other slot variants (`5×2"`, `7×36mm`, `8×1.25"`, `Mini`) — Untested on hardware (uses the same USB HID protocol and dynamic `slot_count` discovery).
 - **EAF (Focusers, USB HID `03c3:1f10`)** — **Implemented (asynchronous baseline).**
-  - [x] **ZWO EAF (`EAF-0-0`, fw `3.2.2`, `03c3:1f10`)** — Verified on hardware (`openSUSE Tumbleweed x86_64`).
+  - [x] **ZWO EAF (12V revision, fw `3.1.9`, and 5V revision, fw `3.2.2`, `03c3:1f10`)** — Verified on hardware (`openSUSE Tumbleweed x86_64`).
   - [ ] **ZWO EAF 24-bit firmware (`fw > 3.3.5`, `600,000` step range) / EAF Pro (USB mode)** — Untested on hardware.
 - **CAA (Rotators, USB HID)** — **Tentative** (no hardware on hand—at most an experimental/skeleton implementation unless contributed and verified by a CAA owner).
 

@@ -34,6 +34,7 @@ _RUN_STOP = 0x00
 _RUN_MOVE = 0x01
 _OPCODE_MOVE_OR_STOP = 0x00
 _OPCODE_RESET_POSITION = 0x01
+_OPCODE_SET_MAX_STEP = 0x02
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,15 +127,31 @@ class Eaf(ZwoHidDevice[EafStatus]):
         status, _ = await self._read_status_report()
         return status
 
-    def _build_control_payload(self, status_reply: bytes, *, run: int, step: int, opcode: int) -> bytes:
-        backlash = status_reply[5]
-        flags = status_reply[13]
-        max_step_lo = status_reply[14:16]
+    def _build_control_payload(
+        self,
+        status_reply: bytes,
+        *,
+        run: int,
+        step: int,
+        opcode: int,
+        backlash: int | None = None,
+        flags: int | None = None,
+        max_step: int | None = None,
+    ) -> bytes:
+        actual_backlash = status_reply[5] if backlash is None else backlash
+        actual_flags = status_reply[13] if flags is None else flags
+        max_step_lo = status_reply[14:16] if max_step is None else (max_step & 0xFFFF).to_bytes(2, "big")
         if self.firmware_version > _LEGACY_FW_LIMIT:
-            coord_bytes = bytes((status_reply[6],)) + step.to_bytes(3, "big")
+            max_step_hi = status_reply[6] if max_step is None else (max_step >> 16) & 0xFF
+            coord_bytes = bytes((max_step_hi,)) + step.to_bytes(3, "big")
         else:
             coord_bytes = status_reply[6:8] + step.to_bytes(2, "big")
-        return bytes((_CMD_CONTROL, run, backlash)) + coord_bytes + bytes((opcode, 0x00, 0x00, flags)) + max_step_lo
+        return (
+            bytes((_CMD_CONTROL, run, actual_backlash))
+            + coord_bytes
+            + bytes((opcode, 0x00, 0x00, actual_flags))
+            + max_step_lo
+        )
 
     async def move(self, step: int, *, timeout: float = 60.0) -> int:
         """Move to step (0..max_step) and poll until settled. Returns settled step."""
@@ -170,3 +187,47 @@ class Eaf(ZwoHidDevice[EafStatus]):
             raise ValueError(f"step={step} outside allowed range [0, {status.max_step}]")
 
         await self._send(self._build_control_payload(reply, run=_RUN_STOP, step=step, opcode=_OPCODE_RESET_POSITION))
+
+    async def configure(
+        self,
+        *,
+        max_step: int | None = None,
+        backlash: int | None = None,
+        reverse: bool | None = None,
+        beep: bool | None = None,
+        max_force: int | None = None,
+    ) -> None:
+        """Update one or more EAF configuration settings while preserving unspecified fields."""
+        if backlash is not None and not (0 <= backlash <= 255):
+            raise ValueError(f"backlash={backlash} outside allowed range [0, 255]")
+        if max_force is not None and not (1 <= max_force <= 5):
+            raise ValueError(f"max_force={max_force} outside allowed range [1, 5]")
+
+        status, reply = await self._read_status_report()
+        if status.moving:
+            raise ZwoError("EAF is already moving")
+        if max_step is not None:
+            min_max_step = max(1, status.step)
+            if not (min_max_step <= max_step <= self.step_range):
+                raise ValueError(f"max_step={max_step} outside allowed range [{min_max_step}, {self.step_range}]")
+
+        flags = reply[13]
+        if beep is not None:
+            flags = (flags | _FLAG_BEEP) if beep else (flags & ~_FLAG_BEEP)
+        if reverse is not None:
+            flags = (flags | _FLAG_REVERSE) if reverse else (flags & ~_FLAG_REVERSE)
+        if max_force is not None:
+            flags = (flags & 0x0F) | (max_force << 4)
+
+        opcode = _OPCODE_SET_MAX_STEP if max_step is not None else _OPCODE_MOVE_OR_STOP
+        await self._send(
+            self._build_control_payload(
+                reply,
+                run=_RUN_STOP,
+                step=status.step,
+                opcode=opcode,
+                backlash=backlash,
+                flags=flags,
+                max_step=max_step,
+            )
+        )

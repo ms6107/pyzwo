@@ -544,6 +544,152 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
                     await focuser.move(15_000)
             self.assertEqual(len(backend.sent_reports), 2)
 
+    async def test_configure_legacy_and_modern_updates_settings_and_preserves_unspecified(self) -> None:
+        with self.subTest("legacy_flags_and_backlash_opcode_00"):
+            replies = [
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(
+                    state=0x00,
+                    backlash=12,
+                    speed=512,
+                    step=30_068,
+                    flags=0x3A,  # max_force=3, bit3=1, reverse=1, beep=0
+                    max_step=60_000,
+                ),
+            ]
+            with FakeEafHidBackend(replies=replies) as backend:
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    await focuser.configure(backlash=25, reverse=False, beep=True, max_force=2)
+
+            self.assertEqual(
+                backend.sent_reports[-1],
+                bytes(
+                    (
+                        0x03,
+                        0x7E,
+                        0x5A,
+                        0x03,
+                        0x00,  # run = 0
+                        25,  # updated backlash
+                        0x02,
+                        0x00,  # speed = 512 preserved
+                        (30_068 >> 8) & 0xFF,
+                        30_068 & 0xFF,  # step preserved
+                        0x00,  # opcode = 0x00 (max_step not changed)
+                        0x00,
+                        0x00,
+                        0x29,  # max_force=2, bit3=1 preserved, reverse=0, beep=1
+                        0xEA,
+                        0x60,  # max_step = 60_000 preserved
+                    )
+                ),
+            )
+
+        with self.subTest("legacy_max_step_opcode_02"):
+            replies = [
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x00, backlash=10, speed=512, step=4_000, flags=0x22, max_step=23_000),
+            ]
+            with FakeEafHidBackend(replies=replies) as backend:
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    await focuser.configure(max_step=45_000)
+
+            self.assertEqual(
+                backend.sent_reports[-1],
+                bytes(
+                    (
+                        0x03,
+                        0x7E,
+                        0x5A,
+                        0x03,
+                        0x00,
+                        10,
+                        0x02,
+                        0x00,
+                        (4_000 >> 8) & 0xFF,
+                        4_000 & 0xFF,
+                        0x02,  # opcode = 0x02 (set_max_step)
+                        0x00,
+                        0x00,
+                        0x22,
+                        (45_000 >> 8) & 0xFF,
+                        45_000 & 0xFF,
+                    )
+                ),
+            )
+
+        with self.subTest("modern_24bit_combined_opcode_02"):
+            replies = [
+                _firmware_report(version=(3, 3, 7)),
+                _status_report_modern(state=0x00, backlash=5, step=120_000, flags=0x31, max_step=300_000),
+            ]
+            with FakeEafHidBackend(replies=replies) as backend:
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    await focuser.configure(max_step=500_000, beep=False, reverse=True, max_force=4)
+
+            self.assertEqual(
+                backend.sent_reports[-1],
+                bytes(
+                    (
+                        0x03,
+                        0x7E,
+                        0x5A,
+                        0x03,
+                        0x00,
+                        5,  # backlash preserved
+                        (500_000 >> 16) & 0xFF,
+                        (120_000 >> 16) & 0xFF,
+                        (120_000 >> 8) & 0xFF,
+                        120_000 & 0xFF,
+                        0x02,  # opcode = 0x02 (set_max_step)
+                        0x00,
+                        0x00,
+                        0x42,  # max_force=4, reverse=1, beep=0
+                        (500_000 >> 8) & 0xFF,
+                        500_000 & 0xFF,
+                    )
+                ),
+            )
+
+    async def test_configure_validates_bounds_and_rejects_when_moving(self) -> None:
+        with FakeEafHidBackend(
+            replies=[
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x00, step=0, max_step=40_000),
+                _status_report_legacy(state=0x00, step=10_000, max_step=40_000),
+                _status_report_legacy(state=0x00, step=10_000, max_step=40_000),
+            ]
+        ) as backend:
+            async with await Eaf.open(DEV_PATH) as focuser:
+                for bad_backlash in (-1, 256):
+                    with self.subTest(backlash=bad_backlash), self.assertRaises(ValueError):
+                        await focuser.configure(backlash=bad_backlash)
+                for bad_force in (0, 6):
+                    with self.subTest(max_force=bad_force), self.assertRaises(ValueError):
+                        await focuser.configure(max_force=bad_force)
+
+                # Before any status query is sent for the above invalid backlash/max_force checks:
+                self.assertEqual(len(backend.sent_reports), 1)
+
+                # When step=0, max_step=0 is rejected (must be >= 1)
+                with self.assertRaises(ValueError):
+                    await focuser.configure(max_step=0)
+                # When step=10_000, max_step < 10_000 or > 60_000 is rejected
+                for bad_max_step in (9_999, 60_001):
+                    with self.subTest(max_step=bad_max_step), self.assertRaises(ValueError):
+                        await focuser.configure(max_step=bad_max_step)
+
+        with FakeEafHidBackend(
+            replies=[
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x01, step=10_000, max_step=40_000),
+            ]
+        ) as backend:
+            async with await Eaf.open(DEV_PATH) as focuser:
+                with self.assertRaises(ZwoError):
+                    await focuser.configure(reverse=True)
+            self.assertEqual(len(backend.sent_reports), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
