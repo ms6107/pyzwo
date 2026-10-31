@@ -51,8 +51,7 @@ def _status_report(
             0,
             dual_disc,
             0,
-            0,
-            0,
+            0x30,
             0,
         )
     )

@@ -10,7 +10,7 @@ Endpoint 0 using a shared `7e 5a` (`"~Z"`) framing protocol:
 
 - **Host -> Device (`SET_REPORT`, Report ID `0x03`, 16 bytes):**
   `03 7e 5a <payload> 00 ...` (zero-padded to 16 bytes).
-- **Device -> Host (`GET_REPORT`, Report ID `0x01`, 17 bytes):**
+- **Device -> Host (`GET_REPORT`, Report ID `0x01`, 16–17 bytes):**
   `01 7e 5a <selector> <data ...>`, where `reply[3]` echoes `payload[-1]`.
 """
 
@@ -28,6 +28,7 @@ _CMD_LEN = 16
 _REPLY_REPORT_ID = 0x01
 _REPLY_HEADER = b"\x01\x7e\x5a"
 _REPLY_LEN = 17
+_MIN_REPLY_LEN = 16
 _QUERY_ATTEMPTS = 3
 
 # All hidapi calls execute on a single dedicated worker thread so that hid_init,
@@ -155,7 +156,7 @@ class ZwoHid:
                 reply = bytes(self._device.get_feature_report(_REPLY_REPORT_ID, _REPLY_LEN))
             except Exception as exc:
                 raise ZwoError(f"HID I/O failed on {self.path!r}: {exc}") from exc
-            if len(reply) != _REPLY_LEN or not reply.startswith(_REPLY_HEADER):
+            if len(reply) < _MIN_REPLY_LEN or not reply.startswith(_REPLY_HEADER):
                 raise ZwoError(f"Unexpected HID reply for {payload.hex(' ')}: {reply.hex(' ')}")
             # Every query echoes its selector (payload[-1]) in reply[3]; a mismatch means
             # another OS process overwrote the MCU's single reply buffer before our read.
@@ -164,12 +165,13 @@ class ZwoHid:
         raise ZwoQueryCollisionError(f"HID query collision for {payload.hex(' ')}: {reply.hex(' ')}")
 
     async def _query(self, payload: bytes) -> bytes:
-        """Send `[03 7e 5a <payload>...]` and read its 17-byte `[01 7e 5a <selector>...]` reply.
+        """Send `[03 7e 5a <payload>...]` and read its `[01 7e 5a <selector>...]` reply.
 
         `send_feature_report` (`SET_REPORT`) is a synchronous USB Control Transfer (~3 ms)
-        that populates the MCU's single 17-byte `0x01` reply register in RAM before
-        returning, and `get_feature_report` (`GET_REPORT`, ~3 ms) reads that register
-        non-destructively.
+        that populates the MCU's single `0x01` reply register in RAM before returning, and
+        `get_feature_report` (`GET_REPORT`, ~3 ms) reads that register non-destructively
+        (requesting up to 17 bytes as in the vendor SDK; the EFW USB HID report descriptor
+        declares Report ID `0x01` as 15 payload bytes + 1 report ID byte = 16 bytes).
 
         Within this process, `_EXECUTOR` serializes each `_query_sync` call end-to-end.
 
