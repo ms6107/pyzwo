@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Self, TypeVar
 
 _CMD_HEADER = b"\x03\x7e\x5a"
@@ -96,10 +96,21 @@ class ZwoHid:
             raise ZwoError(f"HID open failed on {path!r}: {exc}") from exc
         raise ZwoDevicePathError(f"Device at {path!r} does not match {cls.__name__}")
 
+    @staticmethod
+    def _close_unclaimed(raw_future: Future[Any]) -> None:
+        if raw_future.exception() is None:
+            raw_future.result().close()
+
     @classmethod
     async def open(cls, path: str) -> Self:
         """Verify and open the OS HID device node at `path`."""
-        device = await _run_in_executor(cls._open_device, path)
+        raw_future = _EXECUTOR.submit(cls._open_device, path)
+        try:
+            device = await asyncio.shield(asyncio.wrap_future(raw_future))
+        except BaseException:
+            if not raw_future.cancel() and (not raw_future.done() or raw_future.exception() is None):
+                _EXECUTOR.submit(cls._close_unclaimed, raw_future)
+            raise
         return cls(path, device)
 
     def _close_device(self) -> None:

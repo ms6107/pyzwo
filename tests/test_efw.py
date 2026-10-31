@@ -68,12 +68,14 @@ class FakeHidBackend:
         status_replies_by_path: dict[bytes, list[bytes]] | None = None,
         open_error: Exception | None = None,
         io_error: Exception | None = None,
+        on_open: Callable[[bytes], None] | None = None,
         on_send: Callable[[bytes, bytes], None] | None = None,
     ) -> None:
         self.status_replies = list(status_replies or [_status_report(slots=(3, 3, 3))])
         self.status_replies_by_path = {path: list(replies) for path, replies in (status_replies_by_path or {}).items()}
         self.open_error = open_error
         self.io_error = io_error
+        self.on_open = on_open
         self.on_send = on_send
         self.open_count = 0
         self.close_count = 0
@@ -123,6 +125,8 @@ class FakeHidBackend:
 
     def Device(self, *, path: bytes) -> FakeHidDevice:
         with self._track_call("open", path):
+            if self.on_open is not None:
+                self.on_open(path)
             if self.open_error is not None:
                 raise self.open_error
             self.open_count += 1
@@ -544,6 +548,42 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                         ("open", b"/dev/hidraw10"),
                         ("send", b"/dev/hidraw10"),
                         ("get", b"/dev/hidraw10"),
+                        ("close", b"/dev/hidraw10"),
+                    ],
+                )
+
+        with self.subTest("cancelled_during_in_flight_executor_open"):
+            open_entered = threading.Event()
+            open_release = threading.Event()
+
+            def block_open(_path: bytes) -> None:
+                open_entered.set()
+                open_release.wait(timeout=5.0)
+
+            with FakeHidBackend(on_open=block_open) as backend:
+
+                async def run_open() -> EfwStatus:
+                    async with await Efw.open(DEV_PATH) as wheel:
+                        return await wheel.get_status()
+
+                open_task = asyncio.create_task(run_open())
+                self.assertTrue(await asyncio.to_thread(open_entered.wait, 5.0))
+
+                open_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await open_task
+
+                open_release.set()
+                # Flush _EXECUTOR by running discover() so the queued _close_unclaimed job completes.
+                await Efw.discover()
+
+                self.assertEqual(backend.open_count, 1)
+                self.assertEqual(backend.close_count, 1)
+                self.assertEqual(backend.max_concurrent_calls, 1)
+                self.assertEqual(
+                    [(op, path) for op, path in backend.events if op != "enumerate"],
+                    [
+                        ("open", b"/dev/hidraw10"),
                         ("close", b"/dev/hidraw10"),
                     ],
                 )
