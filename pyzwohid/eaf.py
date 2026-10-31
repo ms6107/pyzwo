@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Self
 
-from .hid import ZwoError, ZwoHidDevice
+from .hid import ZwoError, ZwoHidDevice, _validate_timeout
 
 # Firmware query (02 04) and coordinate-width split (fw <= 3.3.5 vs fw > 3.3.5)
 _CMD_GET_FIRMWARE = b"\x02\x04"
@@ -27,8 +29,11 @@ _STATE_ERROR = 0x06
 # Master control frame (03 <run> <backlash> <b6..b9> <opcode> 00 00 <flags> <max_hi..lo>) and actions
 _CMD_CONTROL = 0x03
 _RUN_STOP = 0x00
+_RUN_MOVE = 0x01
+_OPCODE_MOVE_OR_STOP = 0x00
 _OPCODE_RESET_POSITION = 0x01
 _CMD_CLEAR_ERROR = b"\x01\x0f"
+_POLL_INTERVAL_S = 0.2
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +120,31 @@ class Eaf(ZwoHidDevice):
             coord_bytes = status_reply[6:8] + step.to_bytes(2, "big")
         return bytes((_CMD_CONTROL, run, backlash)) + coord_bytes + bytes((opcode, 0x00, 0x00, flags)) + max_step_lo
 
+    async def move(self, step: int, *, timeout: float = 60.0) -> int:
+        """Move to step (0..max_step) and poll until settled. Returns settled step."""
+        _validate_timeout(timeout)
+
+        status, reply = await self._read_status_report()
+        if status.moving:
+            raise ZwoError("EAF is already moving")
+        if not (0 <= step <= status.max_step):
+            raise ValueError(f"step={step} outside allowed range [0, {status.max_step}]")
+
+        await self._send(self._build_control_payload(reply, run=_RUN_MOVE, step=step, opcode=_OPCODE_MOVE_OR_STOP))
+        return await self._wait_until_settled(timeout, f"move({step})")
+
+    async def stop(self, *, timeout: float = 5.0) -> int:
+        """Send a stop command (`03 00 ...`) and poll until settled. Returns settled step."""
+        _validate_timeout(timeout)
+
+        status, reply = await self._read_status_report()
+        await self._send(
+            self._build_control_payload(reply, run=_RUN_STOP, step=status.step, opcode=_OPCODE_MOVE_OR_STOP)
+        )
+        if not status.moving:
+            return status.step
+        return await self._wait_until_settled(timeout, "stop()")
+
     async def reset_position(self, step: int) -> None:
         """Overwrite the current focuser step coordinate (0..max_step) in the MCU without moving."""
         status, reply = await self._read_status_report()
@@ -128,3 +158,16 @@ class Eaf(ZwoHidDevice):
     async def clear_error(self) -> None:
         """Send a fire-and-forget command (`01 0f`) to clear latched MCU hardware error state (`0x06`)."""
         await self._send(_CMD_CLEAR_ERROR)
+
+    async def _wait_until_settled(self, timeout: float, operation: str) -> int:
+        deadline = monotonic() + timeout
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"{operation} timed out after {timeout:.2f}s")
+            await asyncio.sleep(min(_POLL_INTERVAL_S, remaining))
+            # The final query waking at `deadline` may finish slightly past `deadline`;
+            # if the focuser has settled by then, return the settled step rather than raising.
+            status = await self.get_status()
+            if not status.moving:
+                return status.step

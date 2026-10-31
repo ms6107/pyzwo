@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import os
 import sys
 import tempfile
@@ -459,6 +460,201 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ZwoError):
                     await focuser.reset_position(10_000)
             self.assertEqual(len(backend.sent_reports), 2)
+
+    async def test_move_legacy_and_modern_sends_command_and_polls_until_settled(self) -> None:
+        with self.subTest("legacy_16bit"):
+            replies = [
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x00, backlash=4, speed=512, step=30_000, flags=0x32, max_step=60_000),
+                _status_report_legacy(state=0x01, backlash=4, speed=512, step=30_050, flags=0x32, max_step=60_000),
+                _status_report_legacy(state=0x00, backlash=4, speed=512, step=30_100, flags=0x32, max_step=60_000),
+            ]
+            with (
+                FakeEafHidBackend(replies=replies) as backend,
+                patch("pyzwohid.eaf.asyncio.sleep"),
+            ):
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    settled = await focuser.move(30_100)
+
+            self.assertEqual(settled, 30_100)
+            self.assertEqual(
+                backend.sent_reports[2],
+                bytes(
+                    (
+                        0x03,
+                        0x7E,
+                        0x5A,
+                        0x03,
+                        0x01,  # run = 1
+                        4,  # backlash preserved
+                        0x02,
+                        0x00,  # speed = 512 preserved
+                        (30_100 >> 8) & 0xFF,
+                        30_100 & 0xFF,
+                        0x00,  # opcode = move/stop
+                        0x00,
+                        0x00,
+                        0x32,  # flags preserved
+                        0xEA,
+                        0x60,  # max_step = 60_000 preserved
+                    )
+                ),
+            )
+
+        with self.subTest("modern_24bit"):
+            replies = [
+                _firmware_report(version=(3, 3, 7), model_raw=b"EEAF-S-0\x00"),
+                _status_report_modern(state=0x00, backlash=10, step=100_000, flags=0x40, max_step=500_000),
+                _status_report_modern(state=0x01, backlash=10, step=150_000, flags=0x40, max_step=500_000),
+                _status_report_modern(state=0x00, backlash=10, step=200_000, flags=0x40, max_step=500_000),
+            ]
+            with (
+                FakeEafHidBackend(replies=replies) as backend,
+                patch("pyzwohid.eaf.asyncio.sleep"),
+            ):
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    settled = await focuser.move(200_000)
+
+            self.assertEqual(settled, 200_000)
+            self.assertEqual(
+                backend.sent_reports[2],
+                bytes(
+                    (
+                        0x03,
+                        0x7E,
+                        0x5A,
+                        0x03,
+                        0x01,  # run = 1
+                        10,  # backlash preserved
+                        (500_000 >> 16) & 0xFF,
+                        (200_000 >> 16) & 0xFF,
+                        (200_000 >> 8) & 0xFF,
+                        200_000 & 0xFF,
+                        0x00,  # opcode = move/stop
+                        0x00,
+                        0x00,
+                        0x40,
+                        (500_000 >> 8) & 0xFF,
+                        500_000 & 0xFF,
+                    )
+                ),
+            )
+
+    async def test_stop_when_idle_and_while_moving(self) -> None:
+        with self.subTest("already_settled"):
+            replies = [
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x00, backlash=2, speed=512, step=30_068, flags=0x32, max_step=60_000),
+            ]
+            with (
+                FakeEafHidBackend(replies=replies) as backend,
+                patch("pyzwohid.eaf.asyncio.sleep") as mock_sleep,
+            ):
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    settled = await focuser.stop()
+
+            self.assertEqual(settled, 30_068)
+            mock_sleep.assert_not_awaited()
+            self.assertEqual(
+                backend.sent_reports[-1],
+                bytes(
+                    (
+                        0x03,
+                        0x7E,
+                        0x5A,
+                        0x03,
+                        0x00,  # run = 0
+                        2,
+                        0x02,
+                        0x00,
+                        (30_068 >> 8) & 0xFF,
+                        30_068 & 0xFF,
+                        0x00,  # opcode = move/stop
+                        0x00,
+                        0x00,
+                        0x32,
+                        0xEA,
+                        0x60,
+                    )
+                ),
+            )
+
+        with self.subTest("moving_polls_until_settled"):
+            replies = [
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x01, step=30_050, max_step=60_000),
+                _status_report_legacy(state=0x01, step=30_055, max_step=60_000),
+                _status_report_legacy(state=0x00, step=30_058, max_step=60_000),
+            ]
+            with (
+                FakeEafHidBackend(replies=replies) as backend,
+                patch("pyzwohid.eaf.asyncio.sleep") as mock_sleep,
+            ):
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    settled = await focuser.stop()
+
+            self.assertEqual(settled, 30_058)
+            self.assertEqual(mock_sleep.await_count, 2)
+
+    async def test_move_and_stop_validate_arguments_and_reject_busy_move(self) -> None:
+        with FakeEafHidBackend(
+            replies=[
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x00, step=10_000, max_step=40_000),
+            ]
+        ):
+            async with await Eaf.open(DEV_PATH) as focuser:
+                for bad_timeout in (0.0, -1.0, math.nan, math.inf):
+                    with self.subTest(move_timeout=bad_timeout), self.assertRaises(ValueError):
+                        await focuser.move(10_000, timeout=bad_timeout)
+                    with self.subTest(stop_timeout=bad_timeout), self.assertRaises(ValueError):
+                        await focuser.stop(timeout=bad_timeout)
+
+                for bad_step in (-1, 40_001):
+                    with self.subTest(step=bad_step), self.assertRaises(ValueError):
+                        await focuser.move(bad_step)
+
+        with FakeEafHidBackend(
+            replies=[
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x01, step=10_000, max_step=40_000),
+            ]
+        ) as backend:
+            async with await Eaf.open(DEV_PATH) as focuser:
+                with self.assertRaises(ZwoError):
+                    await focuser.move(15_000)
+            self.assertEqual(len(backend.sent_reports), 2)
+
+    async def test_move_and_stop_timeout_raise_builtin_timeout_error_and_cap_sleep(self) -> None:
+        move_replies = [
+            _firmware_report(version=(3, 2, 2)),
+            _status_report_legacy(state=0x00, step=10_000),
+            _status_report_legacy(state=0x01, step=10_010),
+        ]
+        with (
+            FakeEafHidBackend(replies=move_replies),
+            patch("pyzwohid.eaf.asyncio.sleep") as mock_sleep,
+            patch("pyzwohid.eaf.monotonic", side_effect=[0.0, 0.0, 0.01]),
+            self.assertRaises(TimeoutError),
+        ):
+            async with await Eaf.open(DEV_PATH) as focuser:
+                await focuser.move(10_100, timeout=0.01)
+        mock_sleep.assert_awaited_once_with(0.01)
+
+        stop_replies = [
+            _firmware_report(version=(3, 2, 2)),
+            _status_report_legacy(state=0x01, step=10_010),
+            _status_report_legacy(state=0x01, step=10_012),
+        ]
+        with (
+            FakeEafHidBackend(replies=stop_replies),
+            patch("pyzwohid.eaf.asyncio.sleep") as mock_sleep,
+            patch("pyzwohid.eaf.monotonic", side_effect=[0.0, 0.0, 0.01]),
+            self.assertRaises(TimeoutError),
+        ):
+            async with await Eaf.open(DEV_PATH) as focuser:
+                await focuser.stop(timeout=0.01)
+        mock_sleep.assert_awaited_once_with(0.01)
 
     async def test_clear_error_sends_command(self) -> None:
         with FakeEafHidBackend() as backend:

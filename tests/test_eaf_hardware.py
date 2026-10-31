@@ -22,6 +22,8 @@ class TestEafHardware(unittest.IsolatedAsyncioTestCase):
     """Real-hardware tests for ZWO EAF over USB HID.
 
     - ``test_hardware_readonly_status`` is read-only and queries ``get_status()``.
+    - ``test_hardware_move_and_back`` physically moves the focuser by 20 steps and back,
+      and requires explicit operator confirmation via ``PYZWOHID_RUN_HARDWARE_MOTION_TESTS=1``.
     """
 
     async def asyncSetUp(self) -> None:
@@ -42,6 +44,29 @@ class TestEafHardware(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(1 <= status.max_step <= focuser.step_range)
                         self.assertTrue(0 <= status.step <= status.max_step)
                         self.assertFalse(status.moving)
+
+    @unittest.skipUnless(
+        os.environ.get("PYZWOHID_RUN_HARDWARE_MOTION_TESTS") == "1",
+        "Set PYZWOHID_RUN_HARDWARE_MOTION_TESTS=1 to run physical focuser motion tests",
+    )
+    async def test_hardware_move_and_back(self) -> None:
+        for path in self.paths:
+            with self.subTest(path=path):
+                async with await Eaf.open(path) as focuser:
+                    status = await focuser.get_status()
+                    self.assertFalse(status.moving)
+                    self.assertGreaterEqual(status.max_step, 20)
+                    start_step = status.step
+                    target_step = start_step + 20 if start_step + 20 <= status.max_step else start_step - 20
+
+                    settled_next = await focuser.move(target_step, timeout=30.0)
+                    self.assertEqual(settled_next, target_step)
+                    self.assertEqual((await focuser.get_status()).step, target_step)
+
+                    settled_back = await focuser.move(start_step, timeout=30.0)
+                    self.assertEqual(settled_back, start_step)
+                    self.assertEqual((await focuser.get_status()).step, start_step)
+                    self.assertEqual(await focuser.stop(timeout=5.0), start_step)
 
 
 if __name__ == "__main__":

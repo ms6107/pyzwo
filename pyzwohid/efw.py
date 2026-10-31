@@ -8,11 +8,10 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from dataclasses import dataclass
 from time import monotonic
 
-from .hid import ZwoError, ZwoHidDevice
+from .hid import ZwoError, ZwoHidDevice, _validate_timeout
 
 # Status query (02 01) and reply decoding
 _CMD_GET_STATUS = b"\x02\x01"
@@ -83,8 +82,7 @@ class Efw(ZwoHidDevice):
         timeout: float = 30.0,
     ) -> int:
         """Move to 1-based slot (1..slot_count) and poll until settled. Returns settled slot."""
-        if not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
+        _validate_timeout(timeout)
 
         status = await self.get_status()
         if status.slot == -1:
@@ -98,8 +96,7 @@ class Efw(ZwoHidDevice):
 
     async def calibrate(self, timeout: float = 60.0) -> int:
         """Run a full Hall-sensor calibration sweep and poll until settled (at slot 1). Returns settled slot."""
-        if not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
+        _validate_timeout(timeout)
 
         if (await self.get_status()).slot == -1:
             raise ZwoError("EFW is already moving (-1)")

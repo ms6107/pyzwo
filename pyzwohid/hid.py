@@ -17,6 +17,7 @@ Endpoint 0 using a shared `7e 5a` (`"~Z"`) framing protocol:
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -40,6 +41,11 @@ _T = TypeVar("_T")
 
 async def _run_in_executor(func: Callable[..., _T], *args: Any) -> _T:
     return await asyncio.get_running_loop().run_in_executor(_EXECUTOR, func, *args)
+
+
+def _validate_timeout(timeout: float) -> None:
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 
 
 class ZwoError(Exception):
