@@ -3,9 +3,9 @@
 `pyzwohid` is a minimal, path-based Python interface to ZWO USB HID astronomy hardware using `hid` (`hidapi`).
 
 ## Architectural Boundaries
-- **`pyzwohid` scope:** Path-based USB HID transport (`ZwoHidDevice` in `pyzwohid/hid.py`), USB HID device controllers (`Efw` and `EfwStatus` in `pyzwohid/efw.py`, `Eaf` and `EafStatus` in `pyzwohid/eaf.py`), and `ZwoError` / `ZwoDevicePathError` / `ZwoQueryCollisionError`. Non-HID ZWO devices (cameras, mounts) are out of scope.
+- **`pyzwohid` scope:** Path-based USB HID transport (`ZwoHidDevice` and `ZwoHidStatus` in `pyzwohid/hid.py`), USB HID device controllers (`Efw` and `EfwStatus` in `pyzwohid/efw.py`, `Eaf` and `EafStatus` in `pyzwohid/eaf.py`), and `ZwoError` / `ZwoDevicePathError` / `ZwoQueryCollisionError`. Non-HID ZWO devices (cameras, mounts) are out of scope.
 - **No proprietary vendor shared libraries:** Communicate directly via USB HID feature reports (`hid`). Do not add `pyobs`, `numpy`, or framework dependencies to `pyproject.toml`.
-- **1-based EFW slots:** Slot indices are `1..slot_count` (matching both physical wheel markings and the HID wire protocol), with `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
+- **1-based EFW slots:** Slot indices are `1..slot_count` (matching both physical wheel markings and the HID wire protocol), with `moving=True` and `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
 - **Firmware-aware EAF steps:** `await Eaf.open(path)` queries `02 04` once to determine `firmware_version`, `model`, and `step_range` (`60_000` with 16-bit coordinates on `fw <= 3.3.5`, `600_000` with 24-bit coordinates on `fw > 3.3.5`), preserving live `backlash`, `speed`/`max_step`, and `flags` bytes when sending category-`0x03` control frames.
 
 ## Concurrency & Deadlines

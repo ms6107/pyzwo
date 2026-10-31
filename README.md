@@ -14,13 +14,13 @@ It started for my own setup, but it's MPL-2.0-licensed and free to grab for main
 
 ## How it works
 
-Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWFilter.so` / `libEAFFocuser.so` / `.dylib` / `.dll`), `pyzwohid` communicates directly with ZWO USB HID devices via `hid` (`hidapi`) in `pyzwohid/hid.py` (`ZwoHidDevice`) and exposes the filter wheel controller (`Efw` and `EfwStatus`) in `pyzwohid/efw.py` and the focuser controller (`Eaf` and `EafStatus`) in `pyzwohid/eaf.py`.
+Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWFilter.so` / `libEAFFocuser.so` / `.dylib` / `.dll`), `pyzwohid` communicates directly with ZWO USB HID devices via `hid` (`hidapi`) in `pyzwohid/hid.py` (`ZwoHidDevice` and `ZwoHidStatus`) and exposes the filter wheel controller (`Efw` and `EfwStatus`) in `pyzwohid/efw.py` and the focuser controller (`Eaf` and `EafStatus`) in `pyzwohid/eaf.py`.
 
 > **Note:** This is an initial USB HID implementation—the public API is **not yet stable** and will change as additional USB HID device classes are introduced.
 
 Key behaviors in the asynchronous controllers (`Efw` and `Eaf`):
 - **Path-addressed, valid-by-construction handle:** `await Efw.open(path)` and `await Eaf.open(path)` verify the USB `(VID, PID)` and open the OS HID device node (discovered via `await Efw.discover()` / `await Eaf.discover()` or a persistent `udev` symlink), holding the handle open until `await close()` (or `async with` exit) to avoid the ~50 ms Linux `hidraw` open/close overhead.
-- **1-based EFW slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
+- **1-based EFW slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `moving=True` and `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
 - **Firmware-aware, state-preserving EAF control:** `await Eaf.open(path)` queries `02 04` once to read `firmware_version`, `model`, and `step_range` (`60,000` with 16-bit coordinates on `fw <= 3.3.5`, `600,000` with 24-bit coordinates on `fw > 3.3.5`). Motion and coordinate commands (`move`, `stop`, `reset_position`) preserve the focuser's live `backlash`, `speed`/`max_step`, and `flags` bytes from the `02 03` telemetry report rather than overwriting NVRAM settings on connect.
 
 ## Concurrency, Deadlines & Limitations
@@ -80,14 +80,14 @@ async def main() -> None:
     efw_paths = await Efw.discover()
     if efw_paths:
         async with await Efw.open(efw_paths[0]) as wheel:
-            status = await wheel.get_status()  # EfwStatus(slot_count=7, slot=1)
+            status = await wheel.get_status()  # EfwStatus(moving=False, slot_count=7, slot=1)
             settled_slot = await wheel.move_to_slot(2, unidirectional=False, timeout=30.0)
             print(f"EFW settled at slot {settled_slot}")
 
     eaf_paths = await Eaf.discover()
     if eaf_paths:
         async with await Eaf.open(eaf_paths[0]) as focuser:
-            status = await focuser.get_status()  # EafStatus(step=30068, max_step=60000, moving=False)
+            status = await focuser.get_status()  # EafStatus(moving=False, step=30068, max_step=60000)
             settled_step = await focuser.move(status.step + 100, timeout=60.0)
             print(f"EAF settled at step {settled_step}")
 

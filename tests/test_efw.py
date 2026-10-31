@@ -181,7 +181,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                 status = await wheel.get_status()
             await wheel.close()  # idempotent second close
 
-        self.assertEqual(status, EfwStatus(slot_count=SLOT_COUNT, slot=5))
+        self.assertEqual(status, EfwStatus(moving=False, slot_count=SLOT_COUNT, slot=5))
         self.assertEqual(backend.open_count, 1)
         self.assertEqual(backend.close_count, 1)
         self.assertEqual(backend.sent_reports, [b"\x03\x7e\x5a\x02\x01".ljust(16, b"\x00")])
@@ -194,7 +194,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
         for label, report in calibrating_cases:
             with self.subTest(case=label), FakeHidBackend(status_replies=[report]):
                 async with await Efw.open(DEV_PATH) as wheel:
-                    self.assertEqual(await wheel.get_status(), EfwStatus(slot_count=-1, slot=-1))
+                    self.assertEqual(await wheel.get_status(), EfwStatus(moving=True, slot_count=-1, slot=-1))
 
         moving_cases = [
             ("rotating_between_slots", _status_report(state=0x04, slots=(6, 2, 3))),
@@ -204,7 +204,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
         for label, report in moving_cases:
             with self.subTest(case=label), FakeHidBackend(status_replies=[report]):
                 async with await Efw.open(DEV_PATH) as wheel:
-                    self.assertEqual(await wheel.get_status(), EfwStatus(slot_count=SLOT_COUNT, slot=-1))
+                    self.assertEqual(await wheel.get_status(), EfwStatus(moving=True, slot_count=SLOT_COUNT, slot=-1))
 
     async def test_get_status_protocol_and_hardware_errors_raise_zwo_error(self) -> None:
         cases = [
@@ -230,7 +230,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
         replies = [other_reply, other_reply, _status_report(slots=(4, 4, 4))]
         with FakeHidBackend(status_replies=replies) as backend:
             async with await Efw.open(DEV_PATH) as wheel:
-                self.assertEqual(await wheel.get_status(), EfwStatus(slot_count=SLOT_COUNT, slot=4))
+                self.assertEqual(await wheel.get_status(), EfwStatus(moving=False, slot_count=SLOT_COUNT, slot=4))
             self.assertEqual(len(backend.sent_reports), 3)
             self.assertEqual(backend.open_count, 1)
             self.assertEqual(backend.close_count, 1)
@@ -321,7 +321,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                 ]
                 with (
                     FakeHidBackend(status_replies=replies) as backend,
-                    patch("pyzwohid.efw.asyncio.sleep"),
+                    patch("pyzwohid.hid.asyncio.sleep"),
                 ):
                     async with await Efw.open(DEV_PATH) as wheel:
                         settled = await wheel.move_to_slot(6, unidirectional=unidirectional)
@@ -343,7 +343,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             FakeHidBackend(status_replies=replies) as backend,
-            patch("pyzwohid.efw.asyncio.sleep"),
+            patch("pyzwohid.hid.asyncio.sleep"),
         ):
             async with await Efw.open(DEV_PATH) as wheel:
                 settled = await wheel.calibrate()
@@ -363,8 +363,8 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             FakeHidBackend(status_replies=list(replies)),
-            patch("pyzwohid.efw.asyncio.sleep") as mock_sleep,
-            patch("pyzwohid.efw.monotonic", side_effect=[0.0, 0.0, 0.01]),
+            patch("pyzwohid.hid.asyncio.sleep") as mock_sleep,
+            patch("pyzwohid.hid.monotonic", side_effect=[0.0, 0.0, 0.01]),
             self.assertRaises(TimeoutError),
         ):
             async with await Efw.open(DEV_PATH) as wheel:
@@ -373,8 +373,8 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
 
         with (
             FakeHidBackend(status_replies=list(replies)),
-            patch("pyzwohid.efw.asyncio.sleep") as mock_sleep,
-            patch("pyzwohid.efw.monotonic", side_effect=[0.0, 0.0, 0.01]),
+            patch("pyzwohid.hid.asyncio.sleep") as mock_sleep,
+            patch("pyzwohid.hid.monotonic", side_effect=[0.0, 0.0, 0.01]),
             self.assertRaises(TimeoutError),
         ):
             async with await Efw.open(DEV_PATH) as wheel:
@@ -430,8 +430,8 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
             status1, status2, _ = await asyncio.gather(task1, task2, task3)
             await wheel2.close()
 
-        self.assertEqual(status1, EfwStatus(slot_count=SLOT_COUNT, slot=2))
-        self.assertEqual(status2, EfwStatus(slot_count=SLOT_COUNT, slot=6))
+        self.assertEqual(status1, EfwStatus(moving=False, slot_count=SLOT_COUNT, slot=2))
+        self.assertEqual(status2, EfwStatus(moving=False, slot_count=SLOT_COUNT, slot=6))
         self.assertEqual(backend.max_concurrent_calls, 1)
         self.assertEqual(
             backend.events,
@@ -466,7 +466,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                     ],
                 }
             ) as backend,
-            patch("pyzwohid.efw.asyncio.sleep", side_effect=synchronized_sleep),
+            patch("pyzwohid.hid.asyncio.sleep", side_effect=synchronized_sleep),
         ):
             async with await Efw.open(DEV_PATH) as wheel1, await Efw.open(SECOND_DEV_PATH) as wheel2:
                 backend.events.clear()
@@ -499,7 +499,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                         _status_report(state=0x04, slots=(6, 2, 3)),
                     ]
                 ) as backend,
-                patch("pyzwohid.efw.asyncio.sleep", side_effect=block_in_sleep),
+                patch("pyzwohid.hid.asyncio.sleep", side_effect=block_in_sleep),
             ):
 
                 async def run_move() -> int:
@@ -629,7 +629,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                     await a_task
 
                 b_send_release.set()
-                self.assertEqual(await b_task, EfwStatus(slot_count=SLOT_COUNT, slot=2))
+                self.assertEqual(await b_task, EfwStatus(moving=False, slot_count=SLOT_COUNT, slot=2))
                 await wheel_b.close()
 
                 self.assertEqual(backend.open_count, 2)

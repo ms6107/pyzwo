@@ -21,7 +21,9 @@ import math
 import os
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Self, TypeVar
+from dataclasses import dataclass
+from time import monotonic
+from typing import Any, Generic, Self, TypeVar
 
 _CMD_HEADER = b"\x03\x7e\x5a"
 _CMD_LEN = 16
@@ -31,12 +33,14 @@ _REPLY_HEADER = b"\x01\x7e\x5a"
 _REPLY_LEN = 17
 _MIN_REPLY_LEN = 16
 _QUERY_ATTEMPTS = 3
+_POLL_INTERVAL_S = 0.2
 
 # All hidapi calls execute on a single dedicated worker thread so that hid_init,
 # hid_enumerate, hid_open_path, hid_close, and per-device feature-report I/O never
 # race on hidapi's unsynchronized global state or on an open hid_device handle.
 _EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _T = TypeVar("_T")
+_StatusT = TypeVar("_StatusT", bound="ZwoHidStatus")
 
 
 async def _run_in_executor(func: Callable[..., _T], *args: Any) -> _T:
@@ -60,6 +64,17 @@ class ZwoQueryCollisionError(ZwoError):
     """Error raised when concurrent queries from another OS process repeatedly overwrite the MCU reply buffer."""
 
 
+@dataclass(frozen=True, slots=True)
+class ZwoHidStatus:
+    """Base status snapshot for ZWO USB HID devices.
+
+    Attributes:
+        moving: True while the device is moving or calibrating.
+    """
+
+    moving: bool
+
+
 def _get_hid() -> Any:
     """Import `hid` lazily so unit tests can run without `libhidapi` installed."""
     import hid  # type: ignore[import-untyped]
@@ -67,7 +82,7 @@ def _get_hid() -> Any:
     return hid
 
 
-class ZwoHidDevice:
+class ZwoHidDevice(Generic[_StatusT]):
     """Path-based base class for ZWO USB HID devices (`03 7e 5a` framing).
 
     `await cls.open(path)` opens the OS HID device node and holds the handle open
@@ -193,3 +208,20 @@ class ZwoHidDevice:
         (Verified on Linux `hidraw` only so far; macOS/Windows HID backends are untested.)
         """
         return await _run_in_executor(self._query_sync, payload)
+
+    async def get_status(self) -> _StatusT:
+        """Query and return the current device status snapshot."""
+        raise NotImplementedError
+
+    async def _wait_until_settled(self, timeout: float, operation: str) -> _StatusT:
+        deadline = monotonic() + timeout
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"{operation} timed out after {timeout:.2f}s")
+            await asyncio.sleep(min(_POLL_INTERVAL_S, remaining))
+            # The final query waking at `deadline` may finish slightly past `deadline`;
+            # if the device has settled by then, return the settled status rather than raising.
+            status = await self.get_status()
+            if not status.moving:
+                return status

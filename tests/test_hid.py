@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import unittest
 
-from pyzwohid import ZwoHidDevice
+from pyzwohid import ZwoHidDevice, ZwoHidStatus
 
 
 class TestZwoHidDevice(unittest.TestCase):
     def test_subclass_requires_non_empty_pids(self) -> None:
         with self.assertRaises(TypeError):
 
-            class _MissingPidsDevice(ZwoHidDevice):
+            class _MissingPidsDevice(ZwoHidDevice[ZwoHidStatus]):
                 pass
 
 

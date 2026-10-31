@@ -7,12 +7,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from time import monotonic
 from typing import Any, Self
 
-from .hid import ZwoError, ZwoHidDevice, _validate_timeout
+from .hid import ZwoError, ZwoHidDevice, ZwoHidStatus, _validate_timeout
 
 # Firmware query (02 04) and coordinate-width split (fw <= 3.3.5 vs fw > 3.3.5)
 _CMD_GET_FIRMWARE = b"\x02\x04"
@@ -33,25 +31,23 @@ _RUN_MOVE = 0x01
 _OPCODE_MOVE_OR_STOP = 0x00
 _OPCODE_RESET_POSITION = 0x01
 _CMD_CLEAR_ERROR = b"\x01\x0f"
-_POLL_INTERVAL_S = 0.2
 
 
 @dataclass(frozen=True, slots=True)
-class EafStatus:
+class EafStatus(ZwoHidStatus):
     """Snapshot of EAF status from a single 0x03 status report.
 
     Attributes:
+        moving: True while the focuser is moving.
         step: Current focuser position in steps (0..max_step).
         max_step: Configured maximum step limit (1..step_range).
-        moving: True while the focuser is moving.
     """
 
     step: int
     max_step: int
-    moving: bool
 
 
-class Eaf(ZwoHidDevice):
+class Eaf(ZwoHidDevice[EafStatus]):
     """Asynchronous ZWO EAF focuser controller."""
 
     PIDS = (0x1F10,)
@@ -71,7 +67,7 @@ class Eaf(ZwoHidDevice):
     @classmethod
     async def open(cls, path: str) -> Self:
         """Verify and open the EAF at `path`, reading its firmware version and model."""
-        transport = ZwoHidDevice(path, await cls._open_handle(path))
+        transport = ZwoHidDevice[EafStatus](path, await cls._open_handle(path))
         try:
             reply = await transport._query(_CMD_GET_FIRMWARE)
             major, minor, build = reply[4:7]
@@ -103,10 +99,10 @@ class Eaf(ZwoHidDevice):
         if not (0 <= step <= max_step):
             raise ZwoError(f"Invalid EAF step={step} (max_step={max_step}): {reply.hex(' ')}")
 
-        return EafStatus(step=step, max_step=max_step, moving=state == _STATE_MOVING), reply
+        return EafStatus(moving=state == _STATE_MOVING, step=step, max_step=max_step), reply
 
     async def get_status(self) -> EafStatus:
-        """Return EafStatus(step, max_step, moving) from a 0x03 status report."""
+        """Return EafStatus(moving, step, max_step) from a 0x03 status report."""
         status, _ = await self._read_status_report()
         return status
 
@@ -131,7 +127,7 @@ class Eaf(ZwoHidDevice):
             raise ValueError(f"step={step} outside allowed range [0, {status.max_step}]")
 
         await self._send(self._build_control_payload(reply, run=_RUN_MOVE, step=step, opcode=_OPCODE_MOVE_OR_STOP))
-        return await self._wait_until_settled(timeout, f"move({step})")
+        return (await self._wait_until_settled(timeout, f"move({step})")).step
 
     async def stop(self, *, timeout: float = 5.0) -> int:
         """Send a stop command (`03 00 ...`) and poll until settled. Returns settled step."""
@@ -143,7 +139,7 @@ class Eaf(ZwoHidDevice):
         )
         if not status.moving:
             return status.step
-        return await self._wait_until_settled(timeout, "stop()")
+        return (await self._wait_until_settled(timeout, "stop()")).step
 
     async def reset_position(self, step: int) -> None:
         """Overwrite the current focuser step coordinate (0..max_step) in the MCU without moving."""
@@ -158,16 +154,3 @@ class Eaf(ZwoHidDevice):
     async def clear_error(self) -> None:
         """Send a fire-and-forget command (`01 0f`) to clear latched MCU hardware error state (`0x06`)."""
         await self._send(_CMD_CLEAR_ERROR)
-
-    async def _wait_until_settled(self, timeout: float, operation: str) -> int:
-        deadline = monotonic() + timeout
-        while True:
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"{operation} timed out after {timeout:.2f}s")
-            await asyncio.sleep(min(_POLL_INTERVAL_S, remaining))
-            # The final query waking at `deadline` may finish slightly past `deadline`;
-            # if the focuser has settled by then, return the settled step rather than raising.
-            status = await self.get_status()
-            if not status.moving:
-                return status.step

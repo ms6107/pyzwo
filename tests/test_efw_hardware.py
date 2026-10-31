@@ -42,6 +42,7 @@ class TestEfwHardware(unittest.IsolatedAsyncioTestCase):
                         status = await wheel.get_status()
                         self.assertTrue(1 <= status.slot_count <= 16)
                         self.assertTrue(1 <= status.slot <= status.slot_count)
+                        self.assertFalse(status.moving)
 
     @unittest.skipUnless(
         os.environ.get("PYZWOHID_RUN_HARDWARE_MOTION_TESTS") == "1",

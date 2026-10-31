@@ -471,7 +471,7 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
             ]
             with (
                 FakeEafHidBackend(replies=replies) as backend,
-                patch("pyzwohid.eaf.asyncio.sleep"),
+                patch("pyzwohid.hid.asyncio.sleep"),
             ):
                 async with await Eaf.open(DEV_PATH) as focuser:
                     settled = await focuser.move(30_100)
@@ -510,7 +510,7 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
             ]
             with (
                 FakeEafHidBackend(replies=replies) as backend,
-                patch("pyzwohid.eaf.asyncio.sleep"),
+                patch("pyzwohid.hid.asyncio.sleep"),
             ):
                 async with await Eaf.open(DEV_PATH) as focuser:
                     settled = await focuser.move(200_000)
@@ -548,7 +548,7 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
             ]
             with (
                 FakeEafHidBackend(replies=replies) as backend,
-                patch("pyzwohid.eaf.asyncio.sleep") as mock_sleep,
+                patch("pyzwohid.hid.asyncio.sleep") as mock_sleep,
             ):
                 async with await Eaf.open(DEV_PATH) as focuser:
                     settled = await focuser.stop()
@@ -588,7 +588,7 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
             ]
             with (
                 FakeEafHidBackend(replies=replies) as backend,
-                patch("pyzwohid.eaf.asyncio.sleep") as mock_sleep,
+                patch("pyzwohid.hid.asyncio.sleep") as mock_sleep,
             ):
                 async with await Eaf.open(DEV_PATH) as focuser:
                     settled = await focuser.stop()
@@ -633,8 +633,8 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             FakeEafHidBackend(replies=move_replies),
-            patch("pyzwohid.eaf.asyncio.sleep") as mock_sleep,
-            patch("pyzwohid.eaf.monotonic", side_effect=[0.0, 0.0, 0.01]),
+            patch("pyzwohid.hid.asyncio.sleep") as mock_sleep,
+            patch("pyzwohid.hid.monotonic", side_effect=[0.0, 0.0, 0.01]),
             self.assertRaises(TimeoutError),
         ):
             async with await Eaf.open(DEV_PATH) as focuser:
@@ -648,8 +648,8 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             FakeEafHidBackend(replies=stop_replies),
-            patch("pyzwohid.eaf.asyncio.sleep") as mock_sleep,
-            patch("pyzwohid.eaf.monotonic", side_effect=[0.0, 0.0, 0.01]),
+            patch("pyzwohid.hid.asyncio.sleep") as mock_sleep,
+            patch("pyzwohid.hid.monotonic", side_effect=[0.0, 0.0, 0.01]),
             self.assertRaises(TimeoutError),
         ):
             async with await Eaf.open(DEV_PATH) as focuser:
