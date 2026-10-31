@@ -1,0 +1,256 @@
+# Copyright (c) 2026 Maksim Semenov
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+"""Unit tests for pyzwohid.eaf."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+import sys
+import tempfile
+import threading
+import unittest
+from collections.abc import Callable, Iterator
+from types import TracebackType
+from unittest.mock import patch
+
+from pyzwohid import Eaf, ZwoDevicePathError, ZwoError
+
+DEV_PATH = "/dev/hidraw14"
+SECOND_DEV_PATH = "/dev/hidraw15"
+
+
+def _firmware_report(
+    *,
+    version: tuple[int, int, int] = (3, 2, 2),
+    model_raw: bytes = b"\x00EAF-0-0\x00",
+) -> bytes:
+    major, minor, build = version
+    return (bytes((0x01, 0x7E, 0x5A, 0x04, major, minor, build)) + model_raw).ljust(16, b"\x00")[:16]
+
+
+class FakeEafHidBackend:
+    """In-memory fake for the `hid` module and `hid.Device` for EAF tests."""
+
+    def __init__(
+        self,
+        *,
+        replies: list[bytes] | None = None,
+        replies_by_path: dict[bytes, list[bytes]] | None = None,
+        open_error: Exception | None = None,
+        io_error: Exception | None = None,
+        on_open: Callable[[bytes], None] | None = None,
+        on_send: Callable[[bytes, bytes], None] | None = None,
+    ) -> None:
+        self.replies = list(replies or [_firmware_report()])
+        self.replies_by_path = {path: list(r) for path, r in (replies_by_path or {}).items()}
+        self.open_error = open_error
+        self.io_error = io_error
+        self.on_open = on_open
+        self.on_send = on_send
+        self.open_count = 0
+        self.close_count = 0
+        self.sent_reports: list[bytes] = []
+        self.events: list[tuple[str, bytes]] = []
+        self._active_calls = 0
+        self.max_concurrent_calls = 0
+        self._patcher = patch.dict(sys.modules, {"hid": self})
+
+    @contextlib.contextmanager
+    def _track_call(self, op: str, path: bytes = b"") -> Iterator[None]:
+        self._active_calls += 1
+        self.max_concurrent_calls = max(self.max_concurrent_calls, self._active_calls)
+        self.events.append((op, path))
+        try:
+            yield
+        finally:
+            self._active_calls -= 1
+
+    def __enter__(self) -> FakeEafHidBackend:
+        self._patcher.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self._patcher.stop()
+
+    DEVICES: tuple[tuple[int, int, bytes], ...] = (
+        (Eaf.VID, 0x1F10, b"/dev/hidraw15"),
+        (Eaf.VID, 0x1F10, b"/dev/hidraw14"),
+        (Eaf.VID, 0x1F01, b"/dev/hidraw10"),  # ZWO EFW filter wheel (same VID, different PID)
+        (0x1234, 0x1F10, b"/dev/hidraw16"),  # Non-ZWO HID device (different VID, same PID)
+    )
+
+    def enumerate(self, vid: int = 0, pid: int = 0) -> list[dict[str, int | bytes]]:
+        with self._track_call("enumerate"):
+            return [
+                {"vendor_id": d_vid, "product_id": d_pid, "path": d_path}
+                for d_vid, d_pid, d_path in self.DEVICES
+                if vid in (0, d_vid) and pid in (0, d_pid)
+            ]
+
+    def Device(self, *, path: bytes) -> FakeEafHidDevice:
+        with self._track_call("open", path):
+            if self.on_open is not None:
+                self.on_open(path)
+            if self.open_error is not None:
+                raise self.open_error
+            self.open_count += 1
+            return FakeEafHidDevice(self, path)
+
+
+class FakeEafHidDevice:
+    """HID device handle created by FakeEafHidBackend.Device."""
+
+    def __init__(self, backend: FakeEafHidBackend, path: bytes) -> None:
+        self._backend = backend
+        self.path = path
+        self.closed = False
+
+    def send_feature_report(self, data: bytes) -> int:
+        with self._backend._track_call("send", self.path):
+            if self.closed:
+                raise OSError("device closed")
+            if self._backend.io_error is not None:
+                raise self._backend.io_error
+            payload = bytes(data)
+            self._backend.sent_reports.append(payload)
+            if self._backend.on_send is not None:
+                self._backend.on_send(self.path, payload)
+            return len(data)
+
+    def get_feature_report(self, report_id: int, size: int) -> bytes:
+        with self._backend._track_call("get", self.path):
+            if self.closed:
+                raise OSError("device closed")
+            if self._backend.io_error is not None:
+                raise self._backend.io_error
+            replies = self._backend.replies_by_path.get(self.path, self._backend.replies)
+            if len(replies) > 1:
+                return replies.pop(0)
+            return replies[0]
+
+    def close(self) -> None:
+        with self._backend._track_call("close", self.path):
+            if not self.closed:
+                self.closed = True
+                self._backend.close_count += 1
+
+
+class TestEaf(unittest.IsolatedAsyncioTestCase):
+    async def test_discover_deduplicates_and_sorts_paths(self) -> None:
+        with FakeEafHidBackend():
+            self.assertEqual(await Eaf.discover(), ["/dev/hidraw14", "/dev/hidraw15"])
+
+    async def test_open_reads_firmware_and_model_for_legacy_and_modern_versions(self) -> None:
+        cases = [
+            ("legacy_3_2_2", (3, 2, 2), b"\x00EAF-0-0\x00", "EAF-0-0", 60_000),
+            ("legacy_boundary_3_3_5", (3, 3, 5), b"\x00EAF-S-0\x00", "EAF-S-0", 60_000),
+            ("modern_3_3_7", (3, 3, 7), b"EEAF-S-0\x00", "EEAF-S-0", 600_000),
+        ]
+        for label, version, model_raw, expected_model, expected_range in cases:
+            with (
+                self.subTest(case=label),
+                FakeEafHidBackend(replies=[_firmware_report(version=version, model_raw=model_raw)]) as backend,
+            ):
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    self.assertEqual(focuser.path, DEV_PATH)
+                    self.assertEqual(focuser.firmware_version, version)
+                    self.assertEqual(focuser.model, expected_model)
+                    self.assertEqual(focuser.step_range, expected_range)
+                await focuser.close()  # idempotent second close
+
+                self.assertEqual(backend.open_count, 1)
+                self.assertEqual(backend.close_count, 1)
+                self.assertEqual(backend.sent_reports, [b"\x03\x7e\x5a\x02\x04".ljust(16, b"\x00")])
+
+    async def test_open_closes_handle_on_firmware_query_failure_or_cancellation(self) -> None:
+        error_cases = [
+            ("zero_firmware_version", [_firmware_report(version=(0, 0, 0))]),
+            ("corrupt_reply", [bytes(16)]),
+        ]
+        for label, replies in error_cases:
+            with self.subTest(case=label), FakeEafHidBackend(replies=replies) as backend:
+                with self.assertRaises(ZwoError):
+                    await Eaf.open(DEV_PATH)
+                self.assertEqual(backend.open_count, 1)
+                self.assertEqual(backend.close_count, 1)
+
+        with self.subTest(case="io_error_during_firmware_query"):
+            with FakeEafHidBackend(io_error=OSError("usb error")) as backend:
+                with self.assertRaises(ZwoError):
+                    await Eaf.open(DEV_PATH)
+                self.assertEqual(backend.open_count, 1)
+                self.assertEqual(backend.close_count, 1)
+
+        with self.subTest(case="cancelled_during_firmware_query"):
+            entered = threading.Event()
+            release = threading.Event()
+
+            def block_send(_path: bytes, _payload: bytes) -> None:
+                entered.set()
+                release.wait(timeout=5.0)
+
+            with FakeEafHidBackend(on_send=block_send) as backend:
+                open_task = asyncio.create_task(Eaf.open(DEV_PATH))
+                self.assertTrue(await asyncio.to_thread(entered.wait, 5.0))
+
+                open_task.cancel()
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                self.assertEqual(backend.close_count, 0)
+
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await open_task
+
+                self.assertEqual(backend.open_count, 1)
+                self.assertEqual(backend.close_count, 1)
+                self.assertEqual(backend.max_concurrent_calls, 1)
+
+    async def test_open_rejects_non_matching_device_path_and_resolves_symlink(self) -> None:
+        for bad_path in (
+            "/dev/hidraw10",  # ZWO EFW (same VID 0x03C3, non-EAF PID 0x1F01)
+            "/dev/hidraw16",  # Non-ZWO device (wrong VID 0x1234, PID 0x1F10)
+            "/dev/hidraw99",  # Non-existent path
+        ):
+            with self.subTest(path=bad_path), FakeEafHidBackend() as backend:
+                with self.assertRaises(ZwoDevicePathError):
+                    await Eaf.open(bad_path)
+                self.assertEqual(backend.open_count, 0)
+
+        with tempfile.TemporaryDirectory() as tmpdir, FakeEafHidBackend() as backend:
+            link_path = os.path.join(tmpdir, "zwo-eaf")
+            os.symlink(DEV_PATH, link_path)
+            async with await Eaf.open(link_path) as focuser:
+                self.assertEqual(focuser.path, link_path)
+                self.assertEqual(focuser.firmware_version, (3, 2, 2))
+            self.assertEqual(backend.open_count, 1)
+            self.assertEqual(backend.close_count, 1)
+
+    async def test_clear_error_sends_command(self) -> None:
+        with FakeEafHidBackend() as backend:
+            async with await Eaf.open(DEV_PATH) as focuser:
+                await focuser.clear_error()
+
+        self.assertEqual(
+            backend.sent_reports,
+            [
+                b"\x03\x7e\x5a\x02\x04".ljust(16, b"\x00"),
+                b"\x03\x7e\x5a\x01\x0f".ljust(16, b"\x00"),
+            ],
+        )
+        self.assertEqual(backend.open_count, 1)
+        self.assertEqual(backend.close_count, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

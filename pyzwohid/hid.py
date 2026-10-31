@@ -103,16 +103,19 @@ class ZwoHidDevice:
             raw_future.result().close()
 
     @classmethod
-    async def open(cls, path: str) -> Self:
-        """Verify and open the OS HID device node at `path`."""
+    async def _open_handle(cls, path: str) -> Any:
         raw_future = _EXECUTOR.submit(cls._open_device, path)
         try:
-            device = await asyncio.shield(asyncio.wrap_future(raw_future))
+            return await asyncio.shield(asyncio.wrap_future(raw_future))
         except BaseException:
             if not raw_future.cancel() and (not raw_future.done() or raw_future.exception() is None):
                 _EXECUTOR.submit(cls._close_unclaimed, raw_future)
             raise
-        return cls(path, device)
+
+    @classmethod
+    async def open(cls, path: str) -> Self:
+        """Verify and open the OS HID device node at `path`."""
+        return cls(path, await cls._open_handle(path))
 
     def _close_device(self) -> None:
         self._device.close()
