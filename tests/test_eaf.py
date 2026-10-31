@@ -368,6 +368,98 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(backend.open_count, 1)
                 self.assertEqual(backend.close_count, 1)
 
+    async def test_reset_position_legacy_and_modern_preserves_device_settings(self) -> None:
+        with self.subTest("legacy_16bit"):
+            replies = [
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x00, backlash=15, speed=512, step=30_068, flags=0x32, max_step=60_000),
+            ]
+            with FakeEafHidBackend(replies=replies) as backend:
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    await focuser.reset_position(25_000)
+
+            self.assertEqual(
+                backend.sent_reports[-1],
+                bytes(
+                    (
+                        0x03,
+                        0x7E,
+                        0x5A,
+                        0x03,
+                        0x00,  # run = 0
+                        15,  # backlash preserved
+                        0x02,
+                        0x00,  # speed = 512 preserved
+                        (25_000 >> 8) & 0xFF,
+                        25_000 & 0xFF,
+                        0x01,  # opcode = reset_position
+                        0x00,
+                        0x00,
+                        0x32,  # flags preserved
+                        0xEA,
+                        0x60,  # max_step = 60_000 preserved
+                    )
+                ),
+            )
+
+        with self.subTest("modern_24bit"):
+            replies = [
+                _firmware_report(version=(3, 3, 7), model_raw=b"EEAF-S-0\x00"),
+                _status_report_modern(state=0x00, backlash=8, step=120_000, flags=0x41, max_step=450_000),
+            ]
+            with FakeEafHidBackend(replies=replies) as backend:
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    await focuser.reset_position(200_000)
+
+            self.assertEqual(
+                backend.sent_reports[-1],
+                bytes(
+                    (
+                        0x03,
+                        0x7E,
+                        0x5A,
+                        0x03,
+                        0x00,  # run = 0
+                        8,  # backlash preserved
+                        (450_000 >> 16) & 0xFF,  # max_step upper byte preserved
+                        (200_000 >> 16) & 0xFF,
+                        (200_000 >> 8) & 0xFF,
+                        200_000 & 0xFF,
+                        0x01,  # opcode = reset_position
+                        0x00,
+                        0x00,
+                        0x41,  # flags preserved
+                        (450_000 >> 8) & 0xFF,
+                        450_000 & 0xFF,  # max_step lower 16 bits preserved
+                    )
+                ),
+            )
+
+    async def test_reset_position_validates_bounds_and_rejects_when_moving(self) -> None:
+        with FakeEafHidBackend(
+            replies=[
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x00, step=10_000, max_step=40_000),
+            ]
+        ) as backend:
+            async with await Eaf.open(DEV_PATH) as focuser:
+                for bad_step in (-1, 40_001):
+                    with self.subTest(step=bad_step), self.assertRaises(ValueError):
+                        await focuser.reset_position(bad_step)
+            # Only open(02 04) + 2 status queries(02 03); no 03 control report sent
+            self.assertEqual(len(backend.sent_reports), 3)
+
+        with FakeEafHidBackend(
+            replies=[
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x01, step=10_000, max_step=40_000),
+            ]
+        ) as backend:
+            async with await Eaf.open(DEV_PATH) as focuser:
+                with self.assertRaises(ZwoError):
+                    await focuser.reset_position(10_000)
+            self.assertEqual(len(backend.sent_reports), 2)
+
     async def test_clear_error_sends_command(self) -> None:
         with FakeEafHidBackend() as backend:
             async with await Eaf.open(DEV_PATH) as focuser:

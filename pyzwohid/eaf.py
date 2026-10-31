@@ -24,7 +24,10 @@ _STATE_SETTLED = 0x00
 _STATE_MOVING = 0x01
 _STATE_ERROR = 0x06
 
-# Action commands
+# Master control frame (03 <run> <backlash> <b6..b9> <opcode> 00 00 <flags> <max_hi..lo>) and actions
+_CMD_CONTROL = 0x03
+_RUN_STOP = 0x00
+_OPCODE_RESET_POSITION = 0x01
 _CMD_CLEAR_ERROR = b"\x01\x0f"
 
 
@@ -75,8 +78,7 @@ class Eaf(ZwoHidDevice):
             raise
         return cls(path, transport._device, (major, minor, build), model)
 
-    async def get_status(self) -> EafStatus:
-        """Return EafStatus(step, max_step, moving) from a 0x03 status report."""
+    async def _read_status_report(self) -> tuple[EafStatus, bytes]:
         reply = await self._query(_CMD_GET_STATUS)
         state = reply[4]
         if state == _STATE_ERROR:
@@ -96,7 +98,32 @@ class Eaf(ZwoHidDevice):
         if not (0 <= step <= max_step):
             raise ZwoError(f"Invalid EAF step={step} (max_step={max_step}): {reply.hex(' ')}")
 
-        return EafStatus(step=step, max_step=max_step, moving=state == _STATE_MOVING)
+        return EafStatus(step=step, max_step=max_step, moving=state == _STATE_MOVING), reply
+
+    async def get_status(self) -> EafStatus:
+        """Return EafStatus(step, max_step, moving) from a 0x03 status report."""
+        status, _ = await self._read_status_report()
+        return status
+
+    def _build_control_payload(self, status_reply: bytes, *, run: int, step: int, opcode: int) -> bytes:
+        backlash = status_reply[5]
+        flags = status_reply[13]
+        max_step_lo = status_reply[14:16]
+        if self.firmware_version > _LEGACY_FW_LIMIT:
+            coord_bytes = bytes((status_reply[6],)) + step.to_bytes(3, "big")
+        else:
+            coord_bytes = status_reply[6:8] + step.to_bytes(2, "big")
+        return bytes((_CMD_CONTROL, run, backlash)) + coord_bytes + bytes((opcode, 0x00, 0x00, flags)) + max_step_lo
+
+    async def reset_position(self, step: int) -> None:
+        """Overwrite the current focuser step coordinate (0..max_step) in the MCU without moving."""
+        status, reply = await self._read_status_report()
+        if status.moving:
+            raise ZwoError("EAF is already moving")
+        if not (0 <= step <= status.max_step):
+            raise ValueError(f"step={step} outside allowed range [0, {status.max_step}]")
+
+        await self._send(self._build_control_payload(reply, run=_RUN_STOP, step=step, opcode=_OPCODE_RESET_POSITION))
 
     async def clear_error(self) -> None:
         """Send a fire-and-forget command (`01 0f`) to clear latched MCU hardware error state (`0x06`)."""
