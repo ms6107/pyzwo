@@ -16,7 +16,7 @@ jobs:
         run: |
           uv run ruff check .
           uv run ruff format --check .
-          uv run mypy pyzwo tests
+          uv run mypy pyzwohid tests
 
   unit-tests:
     name: Unit Tests (Python 3.11)

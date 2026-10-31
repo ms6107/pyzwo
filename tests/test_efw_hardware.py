@@ -3,7 +3,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Opt-in real-hardware tests for pyzwo.efw."""
+"""Opt-in real-hardware tests for pyzwohid.efw."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ import os
 import tempfile
 import unittest
 
-from pyzwo import Efw
+from pyzwohid import Efw
 
 
 @unittest.skipUnless(
-    os.environ.get("PYZWO_RUN_HARDWARE_TESTS") == "1" or os.environ.get("PYZWO_RUN_HARDWARE_MOTION_TESTS") == "1",
-    "Set PYZWO_RUN_HARDWARE_TESTS=1 to run real-hardware tests",
+    os.environ.get("PYZWOHID_RUN_HARDWARE_TESTS") == "1" or os.environ.get("PYZWOHID_RUN_HARDWARE_MOTION_TESTS") == "1",
+    "Set PYZWOHID_RUN_HARDWARE_TESTS=1 to run real-hardware tests",
 )
 class TestEfwHardware(unittest.IsolatedAsyncioTestCase):
     """Real-hardware tests for ZWO EFW over USB HID.
@@ -24,7 +24,7 @@ class TestEfwHardware(unittest.IsolatedAsyncioTestCase):
     - ``test_hardware_readonly_status`` is read-only and queries ``get_status()``.
     - ``test_hardware_move_next_slot_and_back`` physically moves the wheel to
       ``(slot % slot_count) + 1`` and back, and requires explicit operator confirmation
-      via ``PYZWO_RUN_HARDWARE_MOTION_TESTS=1``.
+      via ``PYZWOHID_RUN_HARDWARE_MOTION_TESTS=1``.
     """
 
     async def asyncSetUp(self) -> None:
@@ -44,8 +44,8 @@ class TestEfwHardware(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(1 <= status.slot <= status.slot_count)
 
     @unittest.skipUnless(
-        os.environ.get("PYZWO_RUN_HARDWARE_MOTION_TESTS") == "1",
-        "Set PYZWO_RUN_HARDWARE_MOTION_TESTS=1 to run physical filter wheel motion tests",
+        os.environ.get("PYZWOHID_RUN_HARDWARE_MOTION_TESTS") == "1",
+        "Set PYZWOHID_RUN_HARDWARE_MOTION_TESTS=1 to run physical filter wheel motion tests",
     )
     async def test_hardware_move_next_slot_and_back(self) -> None:
         for path in self.paths:

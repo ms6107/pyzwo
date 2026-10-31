@@ -1,9 +1,9 @@
-# Least-privilege udev rules for ZWO USB HID astronomy devices (EFW).
+# Least-privilege udev rules for ZWO USB HID astronomy devices.
 #
-# ZWO's libEFWFilter (v1.8.4) is built on hidapi-hidraw and communicates exclusively
-# through Linux /dev/hidraw* nodes. It does not open /dev/bus/usb/* nodes and does not
-# require sysfs USB driver bind/unbind access, drivers_autoprobe, device/hub power/level
-# writes, or usbcore.usbfs_memory_mb tuning.
+# pyzwohid (via hidapi-hidraw) communicates exclusively through Linux /dev/hidraw*
+# nodes. It does not open /dev/bus/usb/* nodes and does not require sysfs USB driver
+# bind/unbind access, drivers_autoprobe, device/hub power/level writes, or
+# usbcore.usbfs_memory_mb tuning.
 #
 # Access model:
 #   - Headless observatory services / daemons / SSH sessions (no active desktop seat):
@@ -14,12 +14,12 @@
 #     /dev/hidraw* node to the active local seat user (the 70- prefix ensures this rule
 #     runs before systemd's 73-seat-late.rules evaluates uaccess).
 #
-# Installation (requires root; never auto-installed by pyzwo):
+# Installation (requires root; never auto-installed by pyzwohid):
 #   1. Create the dedicated device-access group and add your service/operator account:
 #        sudo groupadd --system zwo
 #        sudo usermod -aG zwo <user>
 #   2. Install this rules file and reload udev:
-#        sudo install -m 0644 pyzwo/udev/70-pyzwo.rules /etc/udev/rules.d/70-pyzwo.rules
+#        sudo install -m 0644 pyzwohid/udev/70-pyzwohid.rules /etc/udev/rules.d/70-pyzwohid.rules
 #        sudo udevadm control --reload-rules
 #        sudo udevadm trigger --subsystem-match=hidraw
 #   3. Re-login (or restart the systemd service) so supplementary group membership applies,

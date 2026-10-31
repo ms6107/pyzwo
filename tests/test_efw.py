@@ -3,7 +3,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Unit tests for pyzwo.hid and pyzwo.efw."""
+"""Unit tests for pyzwohid.hid and pyzwohid.efw."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterator
 from types import TracebackType
 from unittest.mock import patch
 
-from pyzwo import Efw, EfwStatus, ZwoDevicePathError, ZwoError, ZwoQueryCollisionError
+from pyzwohid import Efw, EfwStatus, ZwoDevicePathError, ZwoError, ZwoQueryCollisionError
 
 DEV_PATH = "/dev/hidraw10"
 SECOND_DEV_PATH = "/dev/hidraw11"
@@ -322,7 +322,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                 ]
                 with (
                     FakeHidBackend(status_replies=replies) as backend,
-                    patch("pyzwo.efw.asyncio.sleep"),
+                    patch("pyzwohid.efw.asyncio.sleep"),
                 ):
                     async with await Efw.open(DEV_PATH) as wheel:
                         settled = await wheel.move_to_slot(6, unidirectional=unidirectional)
@@ -344,7 +344,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             FakeHidBackend(status_replies=replies) as backend,
-            patch("pyzwo.efw.asyncio.sleep"),
+            patch("pyzwohid.efw.asyncio.sleep"),
         ):
             async with await Efw.open(DEV_PATH) as wheel:
                 settled = await wheel.calibrate()
@@ -364,8 +364,8 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             FakeHidBackend(status_replies=list(replies)),
-            patch("pyzwo.efw.asyncio.sleep") as mock_sleep,
-            patch("pyzwo.efw.monotonic", side_effect=[0.0, 0.0, 0.01]),
+            patch("pyzwohid.efw.asyncio.sleep") as mock_sleep,
+            patch("pyzwohid.efw.monotonic", side_effect=[0.0, 0.0, 0.01]),
             self.assertRaises(TimeoutError),
         ):
             async with await Efw.open(DEV_PATH) as wheel:
@@ -374,8 +374,8 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
 
         with (
             FakeHidBackend(status_replies=list(replies)),
-            patch("pyzwo.efw.asyncio.sleep") as mock_sleep,
-            patch("pyzwo.efw.monotonic", side_effect=[0.0, 0.0, 0.01]),
+            patch("pyzwohid.efw.asyncio.sleep") as mock_sleep,
+            patch("pyzwohid.efw.monotonic", side_effect=[0.0, 0.0, 0.01]),
             self.assertRaises(TimeoutError),
         ):
             async with await Efw.open(DEV_PATH) as wheel:
@@ -467,7 +467,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                     ],
                 }
             ) as backend,
-            patch("pyzwo.efw.asyncio.sleep", side_effect=synchronized_sleep),
+            patch("pyzwohid.efw.asyncio.sleep", side_effect=synchronized_sleep),
         ):
             async with await Efw.open(DEV_PATH) as wheel1, await Efw.open(SECOND_DEV_PATH) as wheel2:
                 backend.events.clear()
@@ -500,7 +500,7 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                         _status_report(state=0x04, slots=(6, 2, 3)),
                     ]
                 ) as backend,
-                patch("pyzwo.efw.asyncio.sleep", side_effect=block_in_sleep),
+                patch("pyzwohid.efw.asyncio.sleep", side_effect=block_in_sleep),
             ):
 
                 async def run_move() -> int:
