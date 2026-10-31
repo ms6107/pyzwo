@@ -2,7 +2,7 @@
 
 `pyzwo` is an independent, pure-Python interface to ZWO astronomy hardware (currently Electronic Filter Wheels via USB HID, with additional ZWO device classes planned incrementally). It provides framework-agnostic device access and error reporting without requiring ZWO's proprietary C shared libraries. Integrations with observatory-control frameworks are maintained separately.
 
-> **Status:** Experimental synchronous ZWO EFW (Electronic Filter Wheel) baseline.
+> **Status:** Experimental asynchronous ZWO EFW (Electronic Filter Wheel) baseline.
 
 ## Philosophy
 
@@ -16,25 +16,25 @@ It started for my own setup, but it's MPL-2.0-licensed and free to grab for main
 
 Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWFilter.so` / `.dylib` / `.dll`), `pyzwo` communicates directly with ZWO USB HID devices via `hid` (`hidapi`) in `pyzwo/hid.py` (`ZwoHid`) and exposes the filter wheel controller (`Efw` and `EfwStatus`) in `pyzwo/efw.py`.
 
-> **Note:** This is an initial USB HID implementation—the public API is **not yet stable** and will change as async execution and additional device classes are introduced.
+> **Note:** This is an initial USB HID implementation—the public API is **not yet stable** and will change as additional device classes are introduced.
 
-Key behaviors in the synchronous EFW controller (`Efw`):
-- **Path-addressed, valid-by-construction handle:** `Efw(path)` opens the OS HID device node (discovered via `Efw.discover()` or a persistent `udev` symlink) on construction and holds the handle open until `close()` (or context-manager exit), avoiding the ~50 ms Linux `hidraw` open/close overhead and keeping per-device I/O off `hidapi`'s thread-unsafe open/close path.
+Key behaviors in the asynchronous EFW controller (`Efw`):
+- **Path-addressed, valid-by-construction handle:** `await Efw.open(path)` verifies the USB `(VID, PID)` and opens the OS HID device node (discovered via `await Efw.discover()` or a persistent `udev` symlink), holding the handle open until `await close()` (or `async with` exit) to avoid the ~50 ms Linux `hidraw` open/close overhead.
 - **1-based slots:** Slot positions are 1-based (`1 .. slot_count`), matching both the physical numbering on the filter wheel carousel and the HID wire protocol, with `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
 
 ## Concurrency, Deadlines & Limitations
 
-- **Single-owner per device:** `Efw` is synchronous and designed for a single owner per physical wheel at a time. `discover()`, `__init__()`, and `close()` are serialized across threads with a module-level lock because `hidapi`'s `hid_enumerate`, `hid_open_path`, and `hid_close` share unsynchronized global state; once opened, separate `ZwoHid` instances for different physical devices can perform I/O in separate threads.
-- **Polling deadlines vs. blocking USB I/O:** The `timeout` argument on `move_to_slot()` and `calibrate()` is a **Python-level monotonic polling deadline** checked between status queries, raising built-in `TimeoutError` if the wheel does not settle in time. Individual synchronous `hidapi` calls have no pre-emptive timeout if the kernel or USB stack blocks.
+- **Single-worker HID executor:** All `hidapi` C calls (`discover`, `open`, `close`, `_send`, `_query`) are dispatched onto a single shared `ThreadPoolExecutor(max_workers=1)` so `hidapi` operations never race on process-global state or on an open `hid_device` handle, while lightweight (~3–6 ms) feature-report transactions across multiple ZWO HID devices interleave cleanly between `asyncio.sleep()` polling intervals.
+- **Polling deadlines vs. blocking USB I/O:** The `timeout` argument on `move_to_slot()` and `calibrate()` is a **Python-level monotonic polling deadline** checked between status queries, raising built-in `TimeoutError` if the wheel does not settle in time. Individual `hidapi` calls have no pre-emptive timeout if the kernel or USB stack blocks.
 
 ## Device classes & roadmap
 
-- **EFW (Filter Wheels, USB HID `03c3:1f01` / `03c3:1f02`)** — **Implemented (synchronous baseline).**
+- **EFW (Filter Wheels, USB HID `03c3:1f01` / `03c3:1f02`)** — **Implemented (asynchronous baseline).**
   - [x] **ZWO EFW 7×2" (legacy revision, fw `3.0.6`, `03c3:1f01`)** — Verified on hardware (`openSUSE Tumbleweed x86_64`).
   - [ ] **ZWO EFW 7×2" II (USB Type-C revision, fw `3.5.2`, `03c3:1f01`)** — Untested with the new direct USB HID implementation.
   - [ ] Other slot variants (`5×2"`, `7×36mm`, `8×1.25"`, `Mini`) — Untested on hardware (uses the same USB HID protocol and dynamic `slot_count` discovery).
-- **Asynchronous EFW execution** — **Planned next.**
 - **EAF (Focusers, USB HID)** — **Planned next.**
+- **CAA (Rotators, USB HID)** — **Planned.**
 - **ASI Cameras & AM Mounts** — **Planned.**
 
 ## Platform & architecture status
@@ -53,6 +53,7 @@ On Linux, `hidapi-hidraw` accesses only `/dev/hidraw*` nodes. Unlike the upstrea
 
 - **Attended desktop Linux sessions:** `TAG+="uaccess"` lets `systemd-logind` dynamically grant an ACL on the matching `/dev/hidraw*` node to the active local seat user (ordered at `70-` so it runs before `73-seat-late.rules`).
 - **Headless observatory services / daemons / SSH sessions:** Desktop seat ACLs (`uaccess`) do not apply when no local seat session is active. The rule assigns `GROUP="zwo", MODE="0660"` so only `root` and members of the `zwo` group can open the device node.
+- **Persistent USB port symlinks:** Because `/dev/hidrawN` indices can change across reboots and ZWO EFWs do not expose a unique USB descriptor serial number, you can pass `systemd-udevd`'s built-in `/dev/input/by-path/<ID_PATH>-hidraw` symlink directly to `await Efw.open(...)` or add a `SYMLINK+="..."` rule pinned to `KERNELS` / `ENV{ID_PATH}` in `70-pyzwo.rules` (see examples in [`pyzwo/udev/70-pyzwo.rules`](pyzwo/udev/70-pyzwo.rules)).
 
 To configure non-root access on a Linux host:
 
@@ -69,13 +70,19 @@ After adding a user to the `zwo` group, log out and log back in (or restart the 
 ## Usage
 
 ```python
+import asyncio
 from pyzwo import Efw
 
-paths = Efw.discover()
-with Efw(paths[0]) as wheel:
-    status = wheel.get_status()  # EfwStatus(slot_count=7, slot=1)
-    settled_slot = wheel.move_to_slot(2, unidirectional=False, timeout=30.0)
-    print(f"Settled at slot {settled_slot}")
+
+async def main() -> None:
+    paths = await Efw.discover()
+    async with await Efw.open(paths[0]) as wheel:
+        status = await wheel.get_status()  # EfwStatus(slot_count=7, slot=1)
+        settled_slot = await wheel.move_to_slot(2, unidirectional=False, timeout=30.0)
+        print(f"Settled at slot {settled_slot}")
+
+
+asyncio.run(main())
 ```
 
 ## Running tests

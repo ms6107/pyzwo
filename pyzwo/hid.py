@@ -16,9 +16,11 @@ Endpoint 0 using a shared `7e 5a` (`"~Z"`) framing protocol:
 
 from __future__ import annotations
 
+import asyncio
 import os
-import threading
-from typing import Any, Self
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Self, TypeVar
 
 _CMD_HEADER = b"\x03\x7e\x5a"
 _CMD_LEN = 16
@@ -28,10 +30,15 @@ _REPLY_HEADER = b"\x01\x7e\x5a"
 _REPLY_LEN = 17
 _QUERY_ATTEMPTS = 3
 
-# hidapi's hid_init, hid_enumerate, hid_open_path, and hid_close share unsynchronized
-# process-global state (such as last_global_error_str and setlocale) and must not be
-# called concurrently across threads even for different devices.
-_LIFECYCLE_LOCK = threading.Lock()
+# All hidapi calls execute on a single dedicated worker thread so that hid_init,
+# hid_enumerate, hid_open_path, hid_close, and per-device feature-report I/O never
+# race on hidapi's unsynchronized global state or on an open hid_device handle.
+_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+_T = TypeVar("_T")
+
+
+async def _run_in_executor(func: Callable[..., _T], *args: Any) -> _T:
+    return await asyncio.get_running_loop().run_in_executor(_EXECUTOR, func, *args)
 
 
 class ZwoError(Exception):
@@ -43,7 +50,7 @@ class ZwoDevicePathError(ZwoError):
 
 
 class ZwoQueryCollisionError(ZwoError):
-    """Error raised when concurrent queries repeatedly overwrite the MCU reply buffer."""
+    """Error raised when concurrent queries from another OS process repeatedly overwrite the MCU reply buffer."""
 
 
 def _get_hid() -> Any:
@@ -56,11 +63,11 @@ def _get_hid() -> Any:
 class ZwoHid:
     """Path-based base class for ZWO USB HID devices (`03 7e 5a` framing).
 
-    Opens the OS HID device node on construction and holds the handle open across
-    `_send()` and `_query()` calls until `close()` (or context-manager exit).
+    `await cls.open(path)` opens the OS HID device node and holds the handle open
+    across `_send()` and `_query()` calls until `await close()` (or `async with` exit).
     Holding the handle open avoids the ~45-50 ms Linux `hidraw` first-open /
-    last-close penalty (`hid_hw_open` / `usb_kill_urb` on the interrupt URB) and
-    keeps per-device I/O off `hidapi`'s thread-unsafe open/close path.
+    last-close penalty (`hid_hw_open` / `usb_kill_urb` on the interrupt URB), and
+    all `hidapi` C calls are serialized on `_EXECUTOR` (1 worker thread).
     """
 
     VID = 0x03C3
@@ -77,46 +84,46 @@ class ZwoHid:
 
     @classmethod
     def _open_device(cls, path: str) -> Any:
-        raw_path = os.path.realpath(os.fsencode(path))
+        raw_path = os.fsencode(path)
+        if os.path.islink(raw_path):
+            raw_path = os.path.realpath(raw_path)
         backend = _get_hid()
-        with _LIFECYCLE_LOCK:
-            try:
-                valid_paths = {info["path"] for pid in cls.PIDS for info in backend.enumerate(cls.VID, pid)}
-                if raw_path in valid_paths:
-                    return backend.Device(path=raw_path)
-            except Exception as exc:
-                raise ZwoError(f"HID open failed on {path!r}: {exc}") from exc
+        try:
+            valid_paths = {info["path"] for pid in cls.PIDS for info in backend.enumerate(cls.VID, pid)}
+            if raw_path in valid_paths:
+                return backend.Device(path=raw_path)
+        except Exception as exc:
+            raise ZwoError(f"HID open failed on {path!r}: {exc}") from exc
         raise ZwoDevicePathError(f"Device at {path!r} does not match {cls.__name__}")
 
     @classmethod
-    def open(cls, path: str) -> Self:
+    async def open(cls, path: str) -> Self:
         """Verify and open the OS HID device node at `path`."""
-        return cls(path, cls._open_device(path))
+        device = await _run_in_executor(cls._open_device, path)
+        return cls(path, device)
 
     def _close_device(self) -> None:
-        with _LIFECYCLE_LOCK:
-            self._device.close()
+        self._device.close()
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close the underlying HID device handle."""
-        self._close_device()
+        await _run_in_executor(self._close_device)
 
-    def __enter__(self) -> Self:
+    async def __aenter__(self) -> Self:
         return self
 
-    def __exit__(self, *_: object) -> None:
-        self.close()
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
 
     @classmethod
     def _discover_paths(cls) -> list[str]:
         backend = _get_hid()
-        with _LIFECYCLE_LOCK:
-            return sorted({os.fsdecode(info["path"]) for pid in cls.PIDS for info in backend.enumerate(cls.VID, pid)})
+        return sorted({os.fsdecode(info["path"]) for pid in cls.PIDS for info in backend.enumerate(cls.VID, pid)})
 
     @classmethod
-    def discover(cls) -> list[str]:
+    async def discover(cls) -> list[str]:
         """Return sorted HID device paths matching `cls.VID` and `cls.PIDS`."""
-        return cls._discover_paths()
+        return await _run_in_executor(cls._discover_paths)
 
     def _send_sync(self, payload: bytes) -> None:
         report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
@@ -125,9 +132,9 @@ class ZwoHid:
         except Exception as exc:
             raise ZwoError(f"HID I/O failed on {self.path!r}: {exc}") from exc
 
-    def _send(self, payload: bytes) -> None:
+    async def _send(self, payload: bytes) -> None:
         """Send a 16-byte `[03 7e 5a <payload>...]` feature report."""
-        self._send_sync(payload)
+        await _run_in_executor(self._send_sync, payload)
 
     def _query_sync(self, payload: bytes) -> bytes:
         report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
@@ -140,12 +147,12 @@ class ZwoHid:
             if not reply.startswith(_REPLY_HEADER):
                 raise ZwoError(f"Unexpected HID reply for {payload.hex(' ')}: {reply.hex(' ')}")
             # Every query echoes its selector (payload[-1]) in reply[3]; a mismatch means
-            # a concurrent query overwrote the MCU's single reply buffer before our read.
+            # another OS process overwrote the MCU's single reply buffer before our read.
             if reply[3] == payload[-1]:
                 return reply
         raise ZwoQueryCollisionError(f"HID query collision for {payload.hex(' ')}: {reply.hex(' ')}")
 
-    def _query(self, payload: bytes) -> bytes:
+    async def _query(self, payload: bytes) -> bytes:
         """Send `[03 7e 5a <payload>...]` and read its 17-byte `[01 7e 5a <selector>...]` reply.
 
         `send_feature_report` (`SET_REPORT`) is a synchronous USB Control Transfer (~3 ms)
@@ -153,11 +160,14 @@ class ZwoHid:
         returning, and `get_feature_report` (`GET_REPORT`, ~3 ms) reads that register
         non-destructively.
 
-        If two queries with different selectors interleave (`A: send -> B: send -> A: get -> B: get`),
-        `B`'s send overwrites the MCU reply register so both reads return `B`'s reply (never swapped).
-        `B` matches `reply[3] == payload[-1]` on attempt 1 and exits, leaving `A` uncontended to
-        succeed on the immediate next attempt without sleep or backoff. Raises
-        `ZwoQueryCollisionError` if all `_QUERY_ATTEMPTS` attempts collide. (Verified on
-        Linux `hidraw` only so far; macOS/Windows HID backends are untested.)
+        Within this process, `_EXECUTOR` serializes each `_query_sync` call end-to-end.
+
+        If two independent OS processes open the same HID device and their queries with
+        different selectors interleave (`A: send -> B: send -> A: get -> B: get`), `B`'s
+        send overwrites the MCU reply register so both reads return `B`'s reply (never
+        swapped). `B` matches `reply[3] == payload[-1]` on attempt 1 and exits, leaving
+        `A` uncontended to succeed on the immediate next attempt without sleep or backoff.
+        Raises `ZwoQueryCollisionError` if all `_QUERY_ATTEMPTS` attempts collide.
+        (Verified on Linux `hidraw` only so far; macOS/Windows HID backends are untested.)
         """
-        return self._query_sync(payload)
+        return await _run_in_executor(self._query_sync, payload)

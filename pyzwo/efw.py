@@ -7,9 +7,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
-import time
 from dataclasses import dataclass
+from time import monotonic
 
 from .hid import ZwoError, ZwoHid
 
@@ -44,17 +45,17 @@ class EfwStatus:
 
 
 class Efw(ZwoHid):
-    """Synchronous ZWO EFW controller."""
+    """Asynchronous ZWO EFW controller."""
 
     PIDS = (0x1F01, 0x1F02)
 
-    def get_status(self) -> EfwStatus:
+    async def get_status(self) -> EfwStatus:
         """Return EfwStatus(slot_count, slot).
 
         slot_count is 1..16, or -1 while Hall-sensor calibration is in progress (state 0x00).
         slot is 1..slot_count when settled, or -1 while moving or calibrating.
         """
-        reply = self._query(_CMD_GET_STATUS)
+        reply = await self._query(_CMD_GET_STATUS)
         # (prev_slot, next_slot) is the bounding slot pair of the current carousel position:
         # (N, N) when centered over slot N, or (N, N + 1) / (slot_count, 1) when between slots
         # (ordered by slot number, independent of CW/CCW rotation direction).
@@ -74,7 +75,7 @@ class Efw(ZwoHid):
             return EfwStatus(slot_count=slot_count, slot=target_slot)
         return EfwStatus(slot_count=slot_count, slot=-1)
 
-    def move_to_slot(
+    async def move_to_slot(
         self,
         slot: int,
         *,
@@ -85,37 +86,37 @@ class Efw(ZwoHid):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 
-        status = self.get_status()
+        status = await self.get_status()
         if status.slot == -1:
             raise ZwoError("EFW is already moving (-1)")
         if not (1 <= slot <= status.slot_count):
             raise ValueError(f"slot={slot} outside allowed range [1, {status.slot_count}]")
 
         direction = _DIR_UNIDIRECTIONAL if unidirectional else _DIR_BIDIRECTIONAL
-        self._send(bytes((_CMD_MOVE, direction, slot)))
-        return self._wait_until_settled(timeout, f"move_to_slot({slot})")
+        await self._send(bytes((_CMD_MOVE, direction, slot)))
+        return await self._wait_until_settled(timeout, f"move_to_slot({slot})")
 
-    def calibrate(self, timeout: float = 60.0) -> int:
+    async def calibrate(self, timeout: float = 60.0) -> int:
         """Run a full Hall-sensor calibration sweep and poll until settled (at slot 1). Returns settled slot."""
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
 
-        if self.get_status().slot == -1:
+        if (await self.get_status()).slot == -1:
             raise ZwoError("EFW is already moving (-1)")
 
-        self._send(_CMD_CALIBRATE)
-        return self._wait_until_settled(timeout, "calibrate()")
+        await self._send(_CMD_CALIBRATE)
+        return await self._wait_until_settled(timeout, "calibrate()")
 
-    def clear_error(self) -> None:
+    async def clear_error(self) -> None:
         """Send a fire-and-forget command (`01 0f`) to clear latched MCU hardware error state (`0x06`)."""
-        self._send(_CMD_CLEAR_ERROR)
+        await self._send(_CMD_CLEAR_ERROR)
 
-    def _wait_until_settled(self, timeout: float, operation: str) -> int:
-        deadline = time.monotonic() + timeout
+    async def _wait_until_settled(self, timeout: float, operation: str) -> int:
+        deadline = monotonic() + timeout
         while True:
-            time.sleep(_POLL_INTERVAL_S)
-            current_slot = self.get_status().slot
+            await asyncio.sleep(_POLL_INTERVAL_S)
+            current_slot = (await self.get_status()).slot
             if current_slot != -1:
                 return current_slot
-            if time.monotonic() >= deadline:
+            if monotonic() >= deadline:
                 raise TimeoutError(f"{operation} timed out after {timeout:.2f}s")
