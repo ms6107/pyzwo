@@ -71,24 +71,35 @@ class ZwoHid:
         if not cls.PIDS:
             raise TypeError(f"{cls.__name__} must define a non-empty PIDS tuple")
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, device: Any) -> None:
         self.path = path
+        self._device = device
+
+    @classmethod
+    def _open_device(cls, path: str) -> Any:
         raw_path = os.path.realpath(os.fsencode(path))
         backend = _get_hid()
         with _LIFECYCLE_LOCK:
             try:
-                valid_paths = {info["path"] for pid in self.PIDS for info in backend.enumerate(self.VID, pid)}
+                valid_paths = {info["path"] for pid in cls.PIDS for info in backend.enumerate(cls.VID, pid)}
                 if raw_path in valid_paths:
-                    self._device: Any = backend.Device(path=raw_path)
-                    return
+                    return backend.Device(path=raw_path)
             except Exception as exc:
                 raise ZwoError(f"HID open failed on {path!r}: {exc}") from exc
-        raise ZwoDevicePathError(f"Device at {path!r} does not match {type(self).__name__}")
+        raise ZwoDevicePathError(f"Device at {path!r} does not match {cls.__name__}")
+
+    @classmethod
+    def open(cls, path: str) -> Self:
+        """Verify and open the OS HID device node at `path`."""
+        return cls(path, cls._open_device(path))
+
+    def _close_device(self) -> None:
+        with _LIFECYCLE_LOCK:
+            self._device.close()
 
     def close(self) -> None:
         """Close the underlying HID device handle."""
-        with _LIFECYCLE_LOCK:
-            self._device.close()
+        self._close_device()
 
     def __enter__(self) -> Self:
         return self
@@ -97,19 +108,42 @@ class ZwoHid:
         self.close()
 
     @classmethod
-    def discover(cls) -> list[str]:
-        """Return sorted HID device paths matching `cls.VID` and `cls.PIDS`."""
+    def _discover_paths(cls) -> list[str]:
         backend = _get_hid()
         with _LIFECYCLE_LOCK:
             return sorted({os.fsdecode(info["path"]) for pid in cls.PIDS for info in backend.enumerate(cls.VID, pid)})
 
-    def _send(self, payload: bytes) -> None:
-        """Send a 16-byte `[03 7e 5a <payload>...]` feature report."""
+    @classmethod
+    def discover(cls) -> list[str]:
+        """Return sorted HID device paths matching `cls.VID` and `cls.PIDS`."""
+        return cls._discover_paths()
+
+    def _send_sync(self, payload: bytes) -> None:
         report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
         try:
             self._device.send_feature_report(report)
         except Exception as exc:
             raise ZwoError(f"HID I/O failed on {self.path!r}: {exc}") from exc
+
+    def _send(self, payload: bytes) -> None:
+        """Send a 16-byte `[03 7e 5a <payload>...]` feature report."""
+        self._send_sync(payload)
+
+    def _query_sync(self, payload: bytes) -> bytes:
+        report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
+        for _ in range(_QUERY_ATTEMPTS):
+            try:
+                self._device.send_feature_report(report)
+                reply = bytes(self._device.get_feature_report(_REPLY_REPORT_ID, _REPLY_LEN))
+            except Exception as exc:
+                raise ZwoError(f"HID I/O failed on {self.path!r}: {exc}") from exc
+            if not reply.startswith(_REPLY_HEADER):
+                raise ZwoError(f"Unexpected HID reply for {payload.hex(' ')}: {reply.hex(' ')}")
+            # Every query echoes its selector (payload[-1]) in reply[3]; a mismatch means
+            # a concurrent query overwrote the MCU's single reply buffer before our read.
+            if reply[3] == payload[-1]:
+                return reply
+        raise ZwoQueryCollisionError(f"HID query collision for {payload.hex(' ')}: {reply.hex(' ')}")
 
     def _query(self, payload: bytes) -> bytes:
         """Send `[03 7e 5a <payload>...]` and read its 17-byte `[01 7e 5a <selector>...]` reply.
@@ -126,17 +160,4 @@ class ZwoHid:
         `ZwoQueryCollisionError` if all `_QUERY_ATTEMPTS` attempts collide. (Verified on
         Linux `hidraw` only so far; macOS/Windows HID backends are untested.)
         """
-        report = (_CMD_HEADER + payload).ljust(_CMD_LEN, b"\x00")
-        for _ in range(_QUERY_ATTEMPTS):
-            try:
-                self._device.send_feature_report(report)
-                reply = bytes(self._device.get_feature_report(_REPLY_REPORT_ID, _REPLY_LEN))
-            except Exception as exc:
-                raise ZwoError(f"HID I/O failed on {self.path!r}: {exc}") from exc
-            if not reply.startswith(_REPLY_HEADER):
-                raise ZwoError(f"Unexpected HID reply for {payload.hex(' ')}: {reply.hex(' ')}")
-            # Every query echoes its selector (payload[-1]) in reply[3]; a mismatch means
-            # a concurrent query overwrote the MCU's single reply buffer before our read.
-            if reply[3] == payload[-1]:
-                return reply
-        raise ZwoQueryCollisionError(f"HID query collision for {payload.hex(' ')}: {reply.hex(' ')}")
+        return self._query_sync(payload)
