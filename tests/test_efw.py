@@ -210,6 +210,9 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
     async def test_get_status_protocol_and_hardware_errors_raise_zwo_error(self) -> None:
         cases = [
             ("bad_header", bytes(17)),
+            ("truncated_header_only", b"\x01\x7e\x5a"),
+            ("truncated_status", _status_report()[:8]),
+            ("truncated_before_dual_disc", _status_report()[:10]),
             ("dual_disc", _status_report(dual_disc=1)),
             ("hw_error", _status_report(state=0x06, error_code=2)),
             ("zero_slots", _status_report(slot_count=0)),
