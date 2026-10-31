@@ -592,6 +592,52 @@ class TestEfw(unittest.IsolatedAsyncioTestCase):
                     ],
                 )
 
+        with self.subTest("cancelled_during_queued_aexit_close"):
+            b_send_entered = threading.Event()
+            b_send_release = threading.Event()
+
+            def block_b_send(path: bytes, _payload: bytes) -> None:
+                if path == os.fsencode(SECOND_DEV_PATH):
+                    b_send_entered.set()
+                    b_send_release.wait(timeout=5.0)
+
+            with FakeHidBackend(
+                status_replies_by_path={
+                    os.fsencode(DEV_PATH): [_status_report(slots=(1, 1, 1))],
+                    os.fsencode(SECOND_DEV_PATH): [_status_report(slots=(2, 2, 2))],
+                },
+                on_send=block_b_send,
+            ) as backend:
+                wheel_a = await Efw.open(DEV_PATH)
+                wheel_b = await Efw.open(SECOND_DEV_PATH)
+
+                async def exit_wheel_a() -> None:
+                    async with wheel_a:
+                        pass
+
+                b_task = asyncio.create_task(wheel_b.get_status())
+                self.assertTrue(await asyncio.to_thread(b_send_entered.wait, 5.0))
+
+                a_task = asyncio.create_task(exit_wheel_a())
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                # Wheel A's close() is queued on _EXECUTOR behind Wheel B's in-flight query.
+                self.assertEqual(backend.close_count, 0)
+
+                a_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await a_task
+
+                b_send_release.set()
+                self.assertEqual(await b_task, EfwStatus(slot_count=SLOT_COUNT, slot=2))
+                await wheel_b.close()
+
+                self.assertEqual(backend.open_count, 2)
+                self.assertEqual(backend.close_count, 2)
+                self.assertEqual(backend.max_concurrent_calls, 1)
+                with self.assertRaises(ZwoError):
+                    await wheel_a.get_status()
+
 
 if __name__ == "__main__":
     unittest.main()

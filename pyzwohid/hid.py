@@ -119,7 +119,7 @@ class ZwoHidDevice:
 
     async def close(self) -> None:
         """Close the underlying HID device handle."""
-        await _run_in_executor(self._close_device)
+        await asyncio.shield(_run_in_executor(self._close_device))
 
     async def __aenter__(self) -> Self:
         return self
