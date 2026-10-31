@@ -38,6 +38,10 @@ class ZwoError(Exception):
     """Error raised when a ZWO USB HID operation or protocol check fails."""
 
 
+class ZwoDevicePathError(ZwoError):
+    """Error raised when a path does not match an enumerated device for the ZWO HID class."""
+
+
 class ZwoQueryCollisionError(ZwoError):
     """Error raised when concurrent queries repeatedly overwrite the MCU reply buffer."""
 
@@ -62,14 +66,24 @@ class ZwoHid:
     VID = 0x03C3
     PIDS: tuple[int, ...] = ()
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if not cls.PIDS:
+            raise TypeError(f"{cls.__name__} must define a non-empty PIDS tuple")
+
     def __init__(self, path: str) -> None:
         self.path = path
-        raw_path = os.fsencode(path)
-        try:
-            with _LIFECYCLE_LOCK:
-                self._device: Any = _get_hid().Device(path=raw_path)
-        except Exception as exc:
-            raise ZwoError(f"HID open failed on {path!r}: {exc}") from exc
+        raw_path = os.path.realpath(os.fsencode(path))
+        backend = _get_hid()
+        with _LIFECYCLE_LOCK:
+            try:
+                valid_paths = {info["path"] for pid in self.PIDS for info in backend.enumerate(self.VID, pid)}
+                if raw_path in valid_paths:
+                    self._device: Any = backend.Device(path=raw_path)
+                    return
+            except Exception as exc:
+                raise ZwoError(f"HID open failed on {path!r}: {exc}") from exc
+        raise ZwoDevicePathError(f"Device at {path!r} does not match {type(self).__name__}")
 
     def close(self) -> None:
         """Close the underlying HID device handle."""

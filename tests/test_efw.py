@@ -13,7 +13,7 @@ import unittest
 from types import TracebackType
 from unittest.mock import patch
 
-from pyzwo import Efw, EfwStatus, ZwoError, ZwoQueryCollisionError
+from pyzwo import Efw, EfwStatus, ZwoDevicePathError, ZwoError, ZwoQueryCollisionError
 
 DEV_PATH = "/dev/hidraw10"
 SLOT_COUNT = 7
@@ -81,12 +81,20 @@ class FakeHidBackend:
     ) -> None:
         self._patcher.stop()
 
-    def enumerate(self, vid: int, pid: int) -> list[dict[str, bytes]]:
-        if vid == Efw.VID and pid == 0x1F01:
-            return [{"path": b"/dev/hidraw11"}, {"path": b"/dev/hidraw10"}]
-        if vid == Efw.VID and pid == 0x1F02:
-            return [{"path": b"/dev/hidraw10"}]
-        return []
+    DEVICES: tuple[tuple[int, int, bytes], ...] = (
+        (Efw.VID, 0x1F01, b"/dev/hidraw11"),
+        (Efw.VID, 0x1F01, b"/dev/hidraw10"),
+        (Efw.VID, 0x1F02, b"/dev/hidraw10"),
+        (Efw.VID, 0x1F10, b"/dev/hidraw12"),  # ZWO EAF focuser (same VID, different PID)
+        (0x1234, 0x1F01, b"/dev/hidraw13"),  # Non-ZWO HID device (different VID, same PID)
+    )
+
+    def enumerate(self, vid: int = 0, pid: int = 0) -> list[dict[str, int | bytes]]:
+        return [
+            {"vendor_id": d_vid, "product_id": d_pid, "path": d_path}
+            for d_vid, d_pid, d_path in self.DEVICES
+            if vid in (0, d_vid) and pid in (0, d_pid)
+        ]
 
     def Device(self, *, path: bytes) -> FakeHidDevice:
         if self.open_error is not None:
@@ -210,6 +218,18 @@ class TestEfw(unittest.TestCase):
             closed_wheel.close()
             with self.assertRaises(ZwoError):
                 closed_wheel.get_status()
+
+    def test_init_rejects_non_matching_device_path(self) -> None:
+        for path in (
+            "/dev/hidraw12",  # existing ZWO EAF (same VID 0x03C3, non-EFW PID 0x1F10)
+            "/dev/hidraw13",  # existing non-ZWO device (wrong VID 0x1234, PID 0x1F01)
+            "/dev/hidraw99",  # non-existent path
+        ):
+            with self.subTest(path=path), FakeHidBackend() as backend:
+                with self.assertRaises(ZwoError) as ctx:
+                    Efw(path)
+                self.assertIsInstance(ctx.exception, ZwoDevicePathError)
+                self.assertEqual(backend.open_count, 0)
 
     def test_move_to_slot_validates_arguments(self) -> None:
         with FakeHidBackend(status_replies=[_status_report(slots=(1, 1, 1))]), Efw(DEV_PATH) as wheel:

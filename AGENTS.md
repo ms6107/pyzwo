@@ -3,7 +3,7 @@
 `pyzwo` is a minimal, path-based Python interface to ZWO USB HID astronomy hardware using `hid` (`hidapi`).
 
 ## Architectural Boundaries
-- **`pyzwo` scope:** Path-based USB HID transport (`ZwoHid` in `pyzwo/hid.py`), device controllers (`Efw` and `EfwStatus` in `pyzwo/efw.py`), and `ZwoError` / `ZwoQueryCollisionError`.
+- **`pyzwo` scope:** Path-based USB HID transport (`ZwoHid` in `pyzwo/hid.py`), device controllers (`Efw` and `EfwStatus` in `pyzwo/efw.py`), and `ZwoError` / `ZwoDevicePathError` / `ZwoQueryCollisionError`.
 - **No proprietary vendor shared libraries:** Communicate directly via USB HID feature reports (`hid`). Do not add `pyobs`, `numpy`, or framework dependencies to `pyproject.toml`.
 - **1-based EFW slots:** Slot indices are `1..slot_count` (matching both physical wheel markings and the HID wire protocol), with `slot=-1` indicating the wheel is currently moving or calibrating (and `slot_count=-1` while Hall-sensor calibration is counting slots).
 
