@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator
 from types import TracebackType
 from unittest.mock import patch
 
-from pyzwohid import Eaf, ZwoDevicePathError, ZwoError
+from pyzwohid import Eaf, EafStatus, ZwoDevicePathError, ZwoError
 
 DEV_PATH = "/dev/hidraw14"
 SECOND_DEV_PATH = "/dev/hidraw15"
@@ -31,6 +31,69 @@ def _firmware_report(
 ) -> bytes:
     major, minor, build = version
     return (bytes((0x01, 0x7E, 0x5A, 0x04, major, minor, build)) + model_raw).ljust(16, b"\x00")[:16]
+
+
+def _status_report_legacy(
+    *,
+    state: int = 0x00,
+    backlash: int = 0,
+    speed: int = 512,
+    step: int = 30_068,
+    raw_temp: int = 0x82DD,
+    flags: int = 0x32,
+    max_step: int = 60_000,
+) -> bytes:
+    return bytes(
+        (
+            0x01,
+            0x7E,
+            0x5A,
+            0x03,
+            state,
+            backlash,
+            (speed >> 8) & 0xFF,
+            speed & 0xFF,
+            (step >> 8) & 0xFF,
+            step & 0xFF,
+            0x00,
+            (raw_temp >> 8) & 0xFF,
+            raw_temp & 0xFF,
+            flags,
+            (max_step >> 8) & 0xFF,
+            max_step & 0xFF,
+        )
+    )
+
+
+def _status_report_modern(
+    *,
+    state: int = 0x00,
+    backlash: int = 0,
+    step: int = 120_000,
+    raw_temp: int = 0x82DD,
+    flags: int = 0x30,
+    max_step: int = 300_000,
+) -> bytes:
+    return bytes(
+        (
+            0x01,
+            0x7E,
+            0x5A,
+            0x03,
+            state,
+            backlash,
+            (max_step >> 16) & 0xFF,
+            (step >> 16) & 0xFF,
+            (step >> 8) & 0xFF,
+            step & 0xFF,
+            0x00,
+            (raw_temp >> 8) & 0xFF,
+            raw_temp & 0xFF,
+            flags,
+            (max_step >> 8) & 0xFF,
+            max_step & 0xFF,
+        )
+    )
 
 
 class FakeEafHidBackend:
@@ -46,7 +109,7 @@ class FakeEafHidBackend:
         on_open: Callable[[bytes], None] | None = None,
         on_send: Callable[[bytes, bytes], None] | None = None,
     ) -> None:
-        self.replies = list(replies or [_firmware_report()])
+        self.replies = list(replies or [_firmware_report(), _status_report_legacy()])
         self.replies_by_path = {path: list(r) for path, r in (replies_by_path or {}).items()}
         self.open_error = open_error
         self.io_error = io_error
@@ -235,6 +298,75 @@ class TestEaf(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(focuser.firmware_version, (3, 2, 2))
             self.assertEqual(backend.open_count, 1)
             self.assertEqual(backend.close_count, 1)
+
+    async def test_get_status_decodes_legacy_16bit_and_modern_24bit_reports(self) -> None:
+        cases = [
+            (
+                "legacy_settled",
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(state=0x00, step=30_068, max_step=60_000, flags=0x32),
+                EafStatus(step=30_068, max_step=60_000, moving=False),
+            ),
+            (
+                "legacy_motor_moving",
+                _firmware_report(version=(3, 3, 5)),
+                _status_report_legacy(state=0x01, step=12_345, max_step=50_000, flags=0x00),
+                EafStatus(step=12_345, max_step=50_000, moving=True),
+            ),
+            (
+                "modern_settled_24bit",
+                _firmware_report(version=(3, 3, 7), model_raw=b"EEAF-S-0\x00"),
+                _status_report_modern(state=0x00, step=123_456, max_step=600_000, flags=0x30),
+                EafStatus(step=123_456, max_step=600_000, moving=False),
+            ),
+            (
+                "modern_motor_moving_24bit",
+                _firmware_report(version=(3, 4, 0), model_raw=b"EEAF-S-0\x00"),
+                _status_report_modern(state=0x01, step=250_000, max_step=400_000, flags=0x00),
+                EafStatus(step=250_000, max_step=400_000, moving=True),
+            ),
+        ]
+        for label, fw_report, status_report, expected in cases:
+            with self.subTest(case=label), FakeEafHidBackend(replies=[fw_report, status_report]) as backend:
+                async with await Eaf.open(DEV_PATH) as focuser:
+                    status = await focuser.get_status()
+                self.assertEqual(status, expected)
+                self.assertEqual(
+                    backend.sent_reports,
+                    [
+                        b"\x03\x7e\x5a\x02\x04".ljust(16, b"\x00"),
+                        b"\x03\x7e\x5a\x02\x03".ljust(16, b"\x00"),
+                    ],
+                )
+
+    async def test_get_status_protocol_and_hardware_errors_raise_zwo_error(self) -> None:
+        cases = [
+            ("hardware_error_state_06", _firmware_report(version=(3, 2, 2)), _status_report_legacy(state=0x06)),
+            ("unknown_state_02", _firmware_report(version=(3, 2, 2)), _status_report_legacy(state=0x02)),
+            ("zero_max_step", _firmware_report(version=(3, 2, 2)), _status_report_legacy(step=0, max_step=0)),
+            (
+                "legacy_max_step_exceeds_60k",
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(step=0, max_step=60_001),
+            ),
+            (
+                "modern_max_step_exceeds_600k",
+                _firmware_report(version=(3, 3, 7)),
+                _status_report_modern(step=0, max_step=600_001),
+            ),
+            (
+                "step_exceeds_max_step",
+                _firmware_report(version=(3, 2, 2)),
+                _status_report_legacy(step=40_001, max_step=40_000),
+            ),
+        ]
+        for label, fw_report, bad_status in cases:
+            with self.subTest(case=label), FakeEafHidBackend(replies=[fw_report, bad_status]) as backend:
+                with self.assertRaises(ZwoError):
+                    async with await Eaf.open(DEV_PATH) as focuser:
+                        await focuser.get_status()
+                self.assertEqual(backend.open_count, 1)
+                self.assertEqual(backend.close_count, 1)
 
     async def test_clear_error_sends_command(self) -> None:
         with FakeEafHidBackend() as backend:
