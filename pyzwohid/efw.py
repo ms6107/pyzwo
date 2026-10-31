@@ -118,6 +118,8 @@ class Efw(ZwoHidDevice):
             if remaining <= 0:
                 raise TimeoutError(f"{operation} timed out after {timeout:.2f}s")
             await asyncio.sleep(min(_POLL_INTERVAL_S, remaining))
+            # The final query waking at `deadline` may finish slightly past `deadline`;
+            # if the wheel has settled by then, return the settled slot rather than raising.
             current_slot = (await self.get_status()).slot
             if current_slot != -1:
                 return current_slot
