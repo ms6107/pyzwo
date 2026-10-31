@@ -8,13 +8,13 @@
 from __future__ import annotations
 
 from .efw import Efw, EfwStatus
-from .hid import ZwoDevicePathError, ZwoError, ZwoHid, ZwoQueryCollisionError
+from .hid import ZwoDevicePathError, ZwoError, ZwoHidDevice, ZwoQueryCollisionError
 
 __all__ = [
     "Efw",
     "EfwStatus",
     "ZwoDevicePathError",
     "ZwoError",
-    "ZwoHid",
+    "ZwoHidDevice",
     "ZwoQueryCollisionError",
 ]

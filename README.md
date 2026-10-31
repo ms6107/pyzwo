@@ -14,7 +14,7 @@ It started for my own setup, but it's MPL-2.0-licensed and free to grab for main
 
 ## How it works
 
-Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWFilter.so` / `.dylib` / `.dll`), `pyzwohid` communicates directly with ZWO USB HID devices via `hid` (`hidapi`) in `pyzwohid/hid.py` (`ZwoHid`) and exposes the filter wheel controller (`Efw` and `EfwStatus`) in `pyzwohid/efw.py`.
+Rather than bundling or binding ZWO's precompiled C++ shared libraries (`libEFWFilter.so` / `.dylib` / `.dll`), `pyzwohid` communicates directly with ZWO USB HID devices via `hid` (`hidapi`) in `pyzwohid/hid.py` (`ZwoHidDevice`) and exposes the filter wheel controller (`Efw` and `EfwStatus`) in `pyzwohid/efw.py`.
 
 > **Note:** This is an initial USB HID implementation—the public API is **not yet stable** and will change as additional USB HID device classes are introduced.
 

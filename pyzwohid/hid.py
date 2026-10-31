@@ -61,7 +61,7 @@ def _get_hid() -> Any:
     return hid
 
 
-class ZwoHid:
+class ZwoHidDevice:
     """Path-based base class for ZWO USB HID devices (`03 7e 5a` framing).
 
     `await cls.open(path)` opens the OS HID device node and holds the handle open

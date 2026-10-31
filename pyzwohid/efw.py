@@ -12,7 +12,7 @@ import math
 from dataclasses import dataclass
 from time import monotonic
 
-from .hid import ZwoError, ZwoHid
+from .hid import ZwoError, ZwoHidDevice
 
 # Status query (02 01) and reply decoding
 _CMD_GET_STATUS = b"\x02\x01"
@@ -44,7 +44,7 @@ class EfwStatus:
     slot: int
 
 
-class Efw(ZwoHid):
+class Efw(ZwoHidDevice):
     """Asynchronous ZWO EFW controller."""
 
     PIDS = (0x1F01, 0x1F02)
