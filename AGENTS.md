@@ -9,7 +9,7 @@
 
 ## Concurrency & Deadlines
 - **Persistent handle & serialized lifecycle:** `ZwoHid(path)` opens the `hid.Device` on construction and holds it open until `close()` (or context-manager exit), serializing `discover()`, `__init__()`, and `close()` with a module-level lock per `hidapi` thread-safety rules.
-- **Single-owner synchronous baseline:** Synchronous methods (`get_status`, `move_to_slot`, `calibrate`) assume a single caller per physical wheel at a time. `move_to_slot` and `calibrate` raise built-in `TimeoutError` if the wheel does not settle before `timeout`.
+- **Single-owner synchronous baseline:** Synchronous methods (`get_status`, `move_to_slot`, `calibrate`, `clear_error`) assume a single caller per physical wheel at a time. `move_to_slot` and `calibrate` raise built-in `TimeoutError` if the wheel does not settle before `timeout`.
 
 ## Testing & Hardware Safety
 - Default unit tests (`tests/test_efw.py`) mock `sys.modules["hid"]` and must pass without physical hardware connected.

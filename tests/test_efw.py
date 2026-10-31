@@ -305,6 +305,14 @@ class TestEfw(unittest.TestCase):
         ):
             wheel.calibrate(timeout=0.5)
 
+    def test_clear_error_sends_command(self) -> None:
+        with FakeHidBackend() as backend, Efw(DEV_PATH) as wheel:
+            wheel.clear_error()
+
+        self.assertEqual(backend.sent_reports, [b"\x03\x7e\x5a\x01\x0f".ljust(16, b"\x00")])
+        self.assertEqual(backend.open_count, 1)
+        self.assertEqual(backend.close_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
